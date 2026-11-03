@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+!.env.example
+
+# Private meeting recordings and uploaded files
+uploads/*
+!uploads/.gitkeep
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.ogg
+*.webm
