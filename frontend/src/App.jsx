@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import AppLayout from './components/layout/AppLayout.jsx'
-import { initialDecisions, initialMeetings, initialTasks } from './data/mockData.js'
+import { initialDecisions, initialTasks } from './data/mockData.js'
+import { createMeeting, deleteMeeting, getMeetings, updateMeeting } from './services/api.js'
 import Dashboard from './pages/Dashboard.jsx'
 import {
   AIChat,
@@ -26,8 +27,51 @@ function readStored(key, fallback) {
 function App() {
   const [tasks, setTasks] = useState(() => readStored('convoiq-tasks', initialTasks))
   const [decisions, setDecisions] = useState(() => readStored('convoiq-decisions', initialDecisions))
-  const [meetings] = useState(initialMeetings)
-  const [audio, setAudio] = useState(null)
+  const [meetings, setMeetings] = useState([])
+  const [meetingsLoading, setMeetingsLoading] = useState(true)
+  const [meetingsError, setMeetingsError] = useState('')
+
+  const refreshMeetings = useCallback(async () => {
+    setMeetingsLoading(true)
+    setMeetingsError('')
+    try {
+      setMeetings(await getMeetings())
+    } catch (error) {
+      setMeetingsError(error.message)
+      return null
+    } finally {
+      setMeetingsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    getMeetings().then((items) => {
+      if (active) setMeetings(items)
+    }).catch((error) => {
+      if (active) setMeetingsError(error.message)
+    }).finally(() => {
+      if (active) setMeetingsLoading(false)
+    })
+    return () => { active = false }
+  }, [])
+
+  const addMeeting = useCallback(async (meeting) => {
+    const created = await createMeeting(meeting)
+    await refreshMeetings()
+    return created
+  }, [refreshMeetings])
+
+  const saveMeeting = useCallback(async (id, meeting) => {
+    const updated = await updateMeeting(id, meeting)
+    await refreshMeetings()
+    return updated
+  }, [refreshMeetings])
+
+  const removeMeeting = useCallback(async (id) => {
+    await deleteMeeting(id)
+    await refreshMeetings()
+  }, [refreshMeetings])
 
   useEffect(() => {
     window.localStorage.setItem('convoiq-tasks', JSON.stringify(tasks))
@@ -37,19 +81,19 @@ function App() {
     window.localStorage.setItem('convoiq-decisions', JSON.stringify(decisions))
   }, [decisions])
 
-  useEffect(() => () => {
-    if (audio?.url) URL.revokeObjectURL(audio.url)
-  }, [audio])
-
   const context = useMemo(() => ({
     meetings,
+    meetingsLoading,
+    meetingsError,
+    refreshMeetings,
+    addMeeting,
+    saveMeeting,
+    removeMeeting,
     tasks,
     setTasks,
     decisions,
     setDecisions,
-    audio,
-    setAudio,
-  }), [meetings, tasks, decisions, audio])
+  }), [meetings, meetingsLoading, meetingsError, refreshMeetings, addMeeting, saveMeeting, removeMeeting, tasks, decisions])
 
   return (
     <BrowserRouter>

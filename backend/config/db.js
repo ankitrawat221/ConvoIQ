@@ -1,5 +1,86 @@
 const mongoose = require('mongoose')
 
+function getMongoErrorCategory(error) {
+  const pending = [error]
+  const seen = new Set()
+  const messages = []
+  const codes = new Set()
+  const names = new Set()
+
+  while (pending.length > 0) {
+    const current = pending.pop()
+    if (!current || typeof current !== 'object' || seen.has(current)) {
+      continue
+    }
+
+    seen.add(current)
+
+    if (current.code !== undefined) codes.add(String(current.code).toUpperCase())
+    if (current.codeName) names.add(String(current.codeName).toLowerCase())
+    if (current.name) names.add(String(current.name).toLowerCase())
+    if (current.message) messages.push(String(current.message).toLowerCase())
+
+    pending.push(current.cause, current.reason)
+
+    if (current.errors instanceof Map) {
+      pending.push(...current.errors.values())
+    } else if (current.errors && typeof current.errors === 'object') {
+      pending.push(...Object.values(current.errors))
+    }
+
+    const servers = current.servers
+    if (servers instanceof Map) {
+      for (const server of servers.values()) {
+        pending.push(server?.error)
+      }
+    }
+  }
+
+  const combinedMessages = messages.join(' ')
+
+  if (
+    codes.has('18') ||
+    names.has('authenticationfailed') ||
+    /authentication failed|auth failed|bad auth/.test(combinedMessages)
+  ) {
+    return 'authentication failure'
+  }
+
+  if (
+    codes.has('ENOTFOUND') ||
+    codes.has('EAI_AGAIN') ||
+    /getaddrinfo|querysrv.*(?:enotfound|eai_again)/.test(combinedMessages)
+  ) {
+    return 'DNS failure'
+  }
+
+  if (
+    codes.has('ERR_INVALID_URL') ||
+    names.has('mongoparseerror') ||
+    names.has('urierror') ||
+    /invalid (?:connection )?uri|invalid url|invalid scheme|must be a string/.test(combinedMessages)
+  ) {
+    return 'invalid URI'
+  }
+
+  if (
+    codes.has('ETIMEDOUT') ||
+    names.has('mongonetworktimeouterror') ||
+    /server selection timed out|connection timed out|operation timed out/.test(combinedMessages)
+  ) {
+    return 'network timeout'
+  }
+
+  if (
+    ['ECONNREFUSED', 'ECONNRESET', 'ENETUNREACH', 'EHOSTUNREACH'].some((code) => codes.has(code)) ||
+    names.has('mongonetworkerror')
+  ) {
+    return 'network failure'
+  }
+
+  return 'unknown connection error'
+}
+
 async function connectDB() {
   const mongoUri = process.env.MONGO_URI
 
@@ -8,12 +89,11 @@ async function connectDB() {
   }
 
   try {
-    await mongoose.connect(mongoUri)
+    await mongoose.connect(mongoUri, { authSource: 'admin' })
     console.log('MongoDB connected successfully.')
-  } catch {
-    throw new Error(
-      'MongoDB connection failed. Check MONGO_URI, Atlas network access, and database user settings.',
-    )
+  } catch (error) {
+    const category = getMongoErrorCategory(error)
+    throw new Error(`MongoDB connection failed: ${category}.`)
   }
 }
 

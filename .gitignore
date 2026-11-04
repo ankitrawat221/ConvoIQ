@@ -37,3 +37,23 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Frontend environment variables
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Backend environment variables
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Python virtual environments (future AI service)
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# IDE settings
+.vscode/*
+!.vscode/extensions.json

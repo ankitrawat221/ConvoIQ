@@ -80,7 +80,7 @@ async function createMeeting(req, res) {
 
 async function getAllMeetings(_req, res) {
   try {
-    const meetings = await Meeting.find().sort({ createdAt: -1 })
+    const meetings = await Meeting.find().sort({ meetingDate: -1, createdAt: -1 })
     return res.status(200).json({
       success: true,
       message: 'Meetings retrieved successfully.',

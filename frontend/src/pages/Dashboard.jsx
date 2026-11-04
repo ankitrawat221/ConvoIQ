@@ -8,7 +8,6 @@ import {
   Clock3,
   FileAudio2,
   FileText,
-  Gavel,
   MessageCircleMore,
   MoreVertical,
   Pause,
@@ -23,14 +22,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import puckImage from '../assets/esp32-puck-clean.png'
 import useAppData from '../components/layout/useAppData.js'
 
-const statItems = [
-  { label: 'Meetings', value: '24', delta: '+12%', icon: CalendarDays, tone: 'purple' },
-  { label: 'Tasks', value: '58', delta: '+18%', icon: CheckCircle2, tone: 'blue' },
-  { label: 'Decisions', value: '17', delta: '+6%', icon: Gavel, tone: 'peach' },
-  { label: 'Transcription Accuracy', value: '96%', icon: AudioLines, tone: 'purple' },
-]
-
 const waveform = [10, 14, 8, 18, 12, 24, 16, 11, 28, 17, 38, 20, 13, 30, 18, 26, 12, 35, 18, 11, 25, 16, 32, 13, 21, 10, 16, 28, 12, 20, 9]
+const dashboardNow = Date.now()
 
 function StatCard({ item }) {
   const Icon = item.icon
@@ -113,31 +106,44 @@ function QuickActions({ openUpload, onGenerateSummary }) {
   )
 }
 
-function RecentMeetings({ meetings }) {
-  const recent = meetings.slice(0, 3)
+function RecentMeetings({ meetings, loading }) {
+  const recent = [...meetings]
+    .sort((a, b) => new Date(b.meetingDate).getTime() - new Date(a.meetingDate).getTime())
+    .slice(0, 3)
   return (
     <section className="recent-panel glass-panel" id="recent-meetings">
       <div className="section-heading with-action"><h2>Recent Meetings</h2><Link to="/meetings" className="text-link">View All <ArrowRight size={16} /></Link></div>
-      <div className="recent-list">
+      {loading ? <p className="muted-copy">Loading recent meetings…</p> : recent.length ? <div className="recent-list">
         {recent.map((meeting) => (
           <article className="recent-meeting glass-inner-card" key={meeting.id}>
             <Link to={`/meetings/${meeting.id}`} className="play-meeting" aria-label={`Open ${meeting.title}`}><Play size={16} fill="currentColor" /></Link>
             <Link to={`/meetings/${meeting.id}`} className="meeting-main">
               <strong>{meeting.title}</strong>
-              <span className="meeting-meta"><span><CalendarDays size={14} />{meeting.date}</span><span><Clock3 size={14} />{meeting.duration}</span><span><UsersRound size={15} />{meeting.participants} participants</span></span>
+              <span className="meeting-meta"><span><CalendarDays size={14} />{meeting.date}</span><span><Clock3 size={14} />{meeting.duration}</span><span><UsersRound size={15} />{meeting.participantCount} participants</span></span>
             </Link>
             <span className={`status-pill status-${meeting.status.toLowerCase().replaceAll(' ', '-')}`}>{meeting.status}</span>
             <button className="subtle-icon" aria-label={`More options for ${meeting.title}`}><MoreVertical size={18} /></button>
           </article>
         ))}
-      </div>
+      </div> : <p className="muted-copy">No meetings have been added yet.</p>}
     </section>
   )
 }
 
-function MeetingInsights() {
+function MeetingInsights({ meetings }) {
   const [range, setRange] = useState('Last 30 Days')
-  const count = range === 'Last 7 Days' ? 8 : range === 'This Year' ? 128 : 24
+  const rangeMilliseconds = range === 'Last 7 Days' ? 7 * 86400000 : range === 'Last 30 Days' ? 30 * 86400000 : Infinity
+  const rangeMeetings = meetings.filter((meeting) => {
+    const meetingTime = new Date(meeting.meetingDate).getTime()
+    if (range === 'This Year') return Number.isFinite(meetingTime) && new Date(meetingTime).getFullYear() === new Date(dashboardNow).getFullYear()
+    return Number.isFinite(meetingTime) && dashboardNow - meetingTime <= rangeMilliseconds && meetingTime <= dashboardNow
+  })
+  const count = rangeMeetings.length
+  const completed = rangeMeetings.filter((meeting) => meeting.status === 'Completed').length
+  const processing = rangeMeetings.filter((meeting) => ['Recording', 'Processing'].includes(meeting.status)).length
+  const pending = rangeMeetings.filter((meeting) => ['Scheduled', 'Failed'].includes(meeting.status)).length
+  const completedPercent = count ? completed / count * 100 : 0
+  const processingPercent = count ? processing / count * 100 : 0
   return (
     <section className="insights-panel glass-panel">
       <div className="section-heading with-action"><div className="heading-with-icon"><BarChartSymbol /><h2>Meeting Insights</h2></div>
@@ -146,11 +152,11 @@ function MeetingInsights() {
         </select>
       </div>
       <div className="insight-content">
-        <div className="donut-chart"><div className="donut-center"><strong>{count}</strong><span>Meetings</span></div></div>
+        <div className="donut-chart" style={{ background: `conic-gradient(from -14deg, #a855f7 0 ${completedPercent}%, #3b82f6 ${completedPercent}% ${completedPercent + processingPercent}%, #dfe3f1 ${completedPercent + processingPercent}% 100%)` }}><div className="donut-center"><strong>{count}</strong><span>Meetings</span></div></div>
         <div className="insight-legend">
-          <div><i className="legend-purple" /><span>Completed</span><strong>16 <small>(67%)</small></strong></div>
-          <div><i className="legend-blue" /><span>In Progress</span><strong>5 <small>(21%)</small></strong></div>
-          <div><i className="legend-muted" /><span>Pending</span><strong>3 <small>(12%)</small></strong></div>
+          <div><i className="legend-purple" /><span>Completed</span><strong>{completed}</strong></div>
+          <div><i className="legend-blue" /><span>Recording / Processing</span><strong>{processing}</strong></div>
+          <div><i className="legend-muted" /><span>Scheduled / Failed</span><strong>{pending}</strong></div>
         </div>
       </div>
     </section>
@@ -162,12 +168,19 @@ function BarChartSymbol() {
 }
 
 export default function Dashboard() {
-  const { meetings, openUpload } = useAppData()
+  const { meetings, meetingsLoading, meetingsError, openUpload } = useAppData()
   const [summaryPreview, setSummaryPreview] = useState(false)
+  const statItems = [
+    { label: 'Meetings', value: meetings.length, icon: CalendarDays, tone: 'purple' },
+    { label: 'With Audio', value: meetings.filter((meeting) => Boolean(meeting.audioUrl)).length, icon: FileAudio2, tone: 'blue' },
+    { label: 'Completed', value: meetings.filter((meeting) => meeting.status === 'Completed').length, icon: CheckCircle2, tone: 'peach' },
+    { label: 'Processing', value: meetings.filter((meeting) => ['Recording', 'Processing'].includes(meeting.status)).length, icon: AudioLines, tone: 'purple' },
+  ]
   return (
     <div className="dashboard-page">
+      {meetingsError && <p className="form-error" role="alert">Could not load meetings: {meetingsError}</p>}
       <section className="stats-grid" aria-label="Meeting statistics">
-        {statItems.map((item) => <StatCard item={item} key={item.label} />)}
+        {statItems.map((item) => <StatCard item={{ ...item, value: meetingsLoading ? '…' : item.value }} key={item.label} />)}
       </section>
       <div className="dashboard-primary-grid">
         <DevicePanel />
@@ -175,14 +188,14 @@ export default function Dashboard() {
       </div>
       {summaryPreview && <section className="summary-preview glass-panel">
         <span className="summary-preview-icon"><Sparkles size={17} /></span>
-        <div><strong>Sample summary preview</strong><p>{meetings[0]?.summary}</p><small>Example content only — no AI service was contacted.</small></div>
+        <div><strong>AI processing is not connected</strong><p>Audio uploads are stored with their meeting. Transcription, summaries, tasks, and decisions are not generated yet.</p><small>No AI service was contacted.</small></div>
         <button onClick={() => setSummaryPreview(false)} aria-label="Dismiss sample summary">×</button>
       </section>}
       <div className="dashboard-secondary-grid">
-        <RecentMeetings meetings={meetings} />
-        <MeetingInsights />
+        <RecentMeetings meetings={meetings} loading={meetingsLoading} />
+        <MeetingInsights meetings={meetings} />
       </div>
-      <div className="dashboard-footnote"><Volume2 size={14} /> Your meeting data is based on local demo content.</div>
+      <div className="dashboard-footnote"><Volume2 size={14} /> Meeting information is loaded from the backend. The live device panel remains a simulation.</div>
     </div>
   )
 }

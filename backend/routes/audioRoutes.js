@@ -1,0 +1,69 @@
+const express = require('express')
+const fs = require('fs/promises')
+const mongoose = require('mongoose')
+const path = require('path')
+const Meeting = require('../models/Meeting')
+const { upload, uploadDirectory } = require('../config/multer')
+
+const router = express.Router()
+
+function isValidMeetingId(id) {
+  return /^[a-f\d]{24}$/i.test(id) && mongoose.isValidObjectId(id)
+}
+
+async function removeStoredAudio(audioUrl) {
+  if (!audioUrl || !audioUrl.startsWith('/uploads/meetings/')) return
+  const filePath = path.join(uploadDirectory, path.basename(audioUrl))
+  await fs.unlink(filePath).catch((error) => {
+    if (error.code !== 'ENOENT') throw error
+  })
+}
+
+router.post('/:meetingId', async (req, res, next) => {
+  if (!isValidMeetingId(req.params.meetingId)) {
+    return res.status(400).json({ success: false, message: 'Meeting ID is invalid.', data: null })
+  }
+
+  try {
+    const meeting = await Meeting.findById(req.params.meetingId)
+    if (!meeting) {
+      return res.status(404).json({ success: false, message: 'Meeting not found.', data: null })
+    }
+    req.meeting = meeting
+    return next()
+  } catch (error) {
+    return next(error)
+  }
+}, upload.single('audio'), async (req, res, next) => {
+  if (!req.file) {
+    return res.status(400).json({ success: false, message: 'Please upload an audio file using the "audio" field.', data: null })
+  }
+
+  const previousAudioUrl = req.meeting.audioUrl
+  req.meeting.audioUrl = `/uploads/meetings/${req.file.filename}`
+  try {
+    await req.meeting.save()
+    await removeStoredAudio(previousAudioUrl).catch((error) => {
+      console.error(`Unable to remove replaced meeting audio: ${error.message}`)
+    })
+    return res.status(200).json({
+      success: true,
+      message: 'Audio uploaded successfully. Transcription has not been run.',
+      data: {
+        filename: req.file.filename,
+        audioUrl: req.meeting.audioUrl,
+        size: req.file.size,
+        meetingId: req.meeting.id,
+      },
+    })
+  } catch (error) {
+    await fs.unlink(req.file.path).catch((cleanupError) => {
+      if (cleanupError.code !== 'ENOENT') {
+        console.error(`Unable to remove failed audio upload: ${cleanupError.message}`)
+      }
+    })
+    return next(error)
+  }
+})
+
+module.exports = router
