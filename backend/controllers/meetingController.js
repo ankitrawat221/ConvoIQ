@@ -1,5 +1,6 @@
 const mongoose = require('mongoose')
 const Meeting = require('../models/Meeting')
+const Workspace = require('../models/Workspace')
 
 const editableFields = [
   'title',
@@ -66,7 +67,19 @@ async function createMeeting(req, res) {
   }
 
   try {
+    if (Object.hasOwn(req.body, 'workspaceId') && req.body.workspaceId !== null) {
+      if (!isValidMeetingId(req.body.workspaceId)) {
+        return sendError(res, 400, 'Workspace ID is invalid.', ['workspaceId'])
+      }
+
+      const workspaceExists = await Workspace.exists({ _id: req.body.workspaceId })
+      if (!workspaceExists) return sendError(res, 404, 'Workspace not found.')
+    }
+
     const meeting = new Meeting(fields)
+    if (Object.hasOwn(req.body, 'workspaceId')) {
+      meeting.workspaceId = req.body.workspaceId
+    }
     await meeting.save()
     return res.status(201).json({
       success: true,
@@ -158,10 +171,45 @@ async function deleteMeeting(req, res) {
   }
 }
 
+async function updateMeetingWorkspace(req, res) {
+  if (!isValidMeetingId(req.params.id)) {
+    return sendError(res, 400, 'Meeting ID is invalid.')
+  }
+  if (!isObjectBody(req.body) || !Object.hasOwn(req.body, 'workspaceId')) {
+    return sendError(res, 400, 'workspaceId is required and must be a workspace ID or null.')
+  }
+
+  const { workspaceId } = req.body
+  if (workspaceId !== null && !isValidMeetingId(workspaceId)) {
+    return sendError(res, 400, 'Workspace ID is invalid.', ['workspaceId'])
+  }
+
+  try {
+    if (workspaceId !== null) {
+      const workspaceExists = await Workspace.exists({ _id: workspaceId })
+      if (!workspaceExists) return sendError(res, 404, 'Workspace not found.')
+    }
+
+    const meeting = await Meeting.findById(req.params.id)
+    if (!meeting) return sendError(res, 404, 'Meeting not found.')
+
+    meeting.workspaceId = workspaceId
+    await meeting.save()
+    return res.status(200).json({
+      success: true,
+      message: workspaceId === null ? 'Meeting removed from its workspace.' : 'Meeting assigned to workspace.',
+      data: meeting,
+    })
+  } catch (error) {
+    return sendModelError(res, error)
+  }
+}
+
 module.exports = {
   createMeeting,
   getAllMeetings,
   getMeetingById,
   updateMeeting,
   deleteMeeting,
+  updateMeetingWorkspace,
 }

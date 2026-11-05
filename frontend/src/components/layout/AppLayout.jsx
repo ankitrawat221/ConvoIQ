@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react'
-import { Outlet, useLocation } from 'react-router-dom'
-import { uploadMeetingAudio } from '../../services/api.js'
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { startMeetingProcessing, uploadMeetingAudio } from '../../services/api.js'
 import Navbar from './Navbar.jsx'
 import { Sidebar } from './Sidebar.jsx'
 
 const pageDetailsMap = {
   '/': ['Dashboard', 'Turn your meetings into insights with AI ✨'],
   '/meetings': ['Meetings', 'All your conversations, organized in one place.'],
+  '/workspaces': ['Workspaces', 'Group related meetings without duplicating them.'],
   '/tasks': ['Tasks', 'Turn meeting conversations into clear next steps.'],
   '/decisions': ['Decisions', 'Keep important decisions easy to find and follow.'],
   '/memory': ['Meeting Memory', 'A searchable memory of what your team discussed.'],
@@ -21,7 +22,14 @@ function currentLocalDateTime() {
   return localDate.toISOString().slice(0, 16)
 }
 
+function getErrorMessage(error) {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error === 'string' && error) return error
+  return 'Audio upload failed. Please try again.'
+}
+
 export default function AppLayout({ context }) {
+  const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [uploadError, setUploadError] = useState('')
@@ -33,10 +41,18 @@ export default function AppLayout({ context }) {
   const [newMeeting, setNewMeeting] = useState({ title: '', meetingDate: '', participants: '' })
   const [selectedFile, setSelectedFile] = useState(null)
   const [createdMeetingId, setCreatedMeetingId] = useState('')
+  const [uploadedMeetingId, setUploadedMeetingId] = useState('')
+  const [uploadWorkspaceId, setUploadWorkspaceId] = useState('')
+  const [uploadCompleteCallback, setUploadCompleteCallback] = useState(null)
   const location = useLocation()
   const page = useMemo(() => {
-    const detailRoute = /^\/meetings\/[^/]+$/.test(location.pathname)
-    return detailRoute ? ['Meeting Details', 'A closer look at this conversation and its follow-ups.'] : (pageDetailsMap[location.pathname] || pageDetailsMap['/'])
+    if (/^\/meetings\/[^/]+$/.test(location.pathname)) {
+      return ['Meeting Details', 'A closer look at this conversation and its follow-ups.']
+    }
+    if (/^\/workspaces\/[^/]+$/.test(location.pathname)) {
+      return ['Workspace', 'Meetings and memory for this workspace.']
+    }
+    return pageDetailsMap[location.pathname] || pageDetailsMap['/']
   }, [location.pathname])
 
   const handleUpload = (event) => {
@@ -78,6 +94,7 @@ export default function AppLayout({ context }) {
           title: newMeeting.title.trim(),
           meetingDate: new Date(newMeeting.meetingDate).toISOString(),
           participants,
+          ...(uploadWorkspaceId ? { workspaceId: uploadWorkspaceId } : {}),
         })
         meetingId = created.id
         setCreatedMeetingId(meetingId)
@@ -86,22 +103,47 @@ export default function AppLayout({ context }) {
 
       await uploadMeetingAudio(meetingId, selectedFile, setUploadProgress)
       await context.refreshMeetings()
+      if (uploadCompleteCallback) await uploadCompleteCallback()
+      setUploadedMeetingId(meetingId)
       setUploadSuccess(`Uploaded ${selectedFile.name} successfully. Transcription has not been run.`)
     } catch (error) {
-      setUploadError(error.message)
+      setUploadError(getErrorMessage(error))
     } finally {
       setUploading(false)
     }
   }
 
-  const openUpload = () => {
+  const startProcessingFromUpload = async () => {
+    if (!uploadedMeetingId) return
+    setUploading(true)
+    setUploadError('')
+    try {
+      await startMeetingProcessing(uploadedMeetingId)
+      await context.refreshMeetings()
+      setUploadOpen(false)
+      navigate(`/meetings/${uploadedMeetingId}`)
+    } catch (error) {
+      setUploadError(getErrorMessage(error))
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const openUpload = (workspaceIdOrEvent = '', onUploadComplete = null) => {
+    const workspaceId = typeof workspaceIdOrEvent === 'string' ? workspaceIdOrEvent : ''
     setUploadOpen(true)
     setUploadError('')
     setUploadSuccess('')
     setSelectedFile(null)
     setCreatedMeetingId('')
+    setUploadedMeetingId('')
     setUploadProgress(0)
-    setSelectedMeetingId(context.meetings[0]?.id || '')
+    setUploadWorkspaceId(workspaceId)
+    setUploadCompleteCallback(() => onUploadComplete)
+    const availableMeetings = workspaceId
+      ? context.meetings.filter((meeting) => meeting.workspaceId === workspaceId)
+      : context.meetings
+    setSelectedMeetingId(availableMeetings[0]?.id || '')
     setCreateNewMeeting(false)
     setNewMeeting({ title: '', meetingDate: currentLocalDateTime(), participants: '' })
   }
@@ -139,7 +181,10 @@ export default function AppLayout({ context }) {
                 setUploadError('')
               }} disabled={uploading}>
                 <option value="">Select a meeting</option>
-                {context.meetings.map((meeting) => <option value={meeting.id} key={meeting.id}>{meeting.title}</option>)}
+                {(uploadWorkspaceId
+                  ? context.meetings.filter((meeting) => meeting.workspaceId === uploadWorkspaceId)
+                  : context.meetings
+                ).map((meeting) => <option value={meeting.id} key={meeting.id}>{meeting.title}</option>)}
                 <option value="__new__">Create a new meeting</option>
               </select>
             </label>
@@ -159,7 +204,8 @@ export default function AppLayout({ context }) {
             {uploadSuccess && <p className="upload-success" role="status">{uploadSuccess}</p>}
             <div className="modal-actions">
               <button type="button" className="button-secondary" onClick={() => setUploadOpen(false)} disabled={uploading}>Close</button>
-              <button className="button-primary" disabled={uploading || Boolean(uploadSuccess)}>{uploading ? 'Uploading…' : 'Upload audio'}</button>
+              {uploadSuccess && <button type="button" className="button-primary" onClick={startProcessingFromUpload} disabled={uploading}>{uploading ? 'Starting…' : 'Start AI processing'}</button>}
+              {!uploadSuccess && <button className="button-primary" disabled={uploading}>{uploading ? 'Uploading…' : 'Upload audio'}</button>}
             </div>
           </form>
         </section>

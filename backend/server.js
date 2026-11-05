@@ -7,6 +7,9 @@ const multer = require('multer')
 const connectDB = require('./config/db')
 const meetingRoutes = require('./routes/meetingRoutes')
 const audioRoutes = require('./routes/audioRoutes')
+const workspaceRoutes = require('./routes/workspaceRoutes')
+const aiRoutes = require('./routes/aiRoutes')
+const { markInterruptedProcessingAsFailed } = require('./services/meetingProcessingService')
 
 const app = express()
 const port = process.env.PORT || 5000
@@ -16,7 +19,9 @@ app.use(cors({
 }))
 app.use(express.json())
 app.use('/api/meetings', meetingRoutes)
+app.use('/api/workspaces', workspaceRoutes)
 app.use('/api/audio', audioRoutes)
+app.use('/api/ai', aiRoutes)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { fallthrough: false, index: false }))
 
 app.get('/api/health', (_req, res) => {
@@ -65,6 +70,7 @@ app.use((error, _req, res, _next) => {
 async function startServer() {
   try {
     await connectDB()
+    await markInterruptedProcessingAsFailed()
     app.listen(port, () => {
       console.log(`ConvoIQ backend listening on port ${port}`)
     })

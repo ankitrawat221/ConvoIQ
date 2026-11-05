@@ -14,6 +14,7 @@ import {
   Settings,
   Tasks,
 } from './pages/WorkspacePages.jsx'
+import { WorkspaceDetailPage, WorkspacesPage } from './pages/MeetingWorkspaces.jsx'
 
 function readStored(key, fallback) {
   try {
@@ -102,6 +103,8 @@ function App() {
           <Route index element={<Dashboard />} />
           <Route path="meetings" element={<Meetings />} />
           <Route path="meetings/:meetingId" element={<MeetingDetails />} />
+          <Route path="workspaces" element={<WorkspacesPage />} />
+          <Route path="workspaces/:workspaceId" element={<WorkspaceDetailPage />} />
           <Route path="tasks" element={<Tasks />} />
           <Route path="decisions" element={<Decisions />} />
           <Route path="memory" element={<Memory />} />

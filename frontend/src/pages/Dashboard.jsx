@@ -85,7 +85,7 @@ function DevicePanel() {
 function QuickActions({ openUpload, onGenerateSummary }) {
   const navigate = useNavigate()
   const actions = [
-    { title: <>Upload<br />Audio</>, icon: FileAudio2, tone: 'purple', click: openUpload },
+    { title: <>Upload<br />Audio</>, icon: FileAudio2, tone: 'purple', click: () => openUpload() },
     { title: <>Generate<br />Summary</>, icon: FileText, tone: 'violet', click: onGenerateSummary },
     { title: <>Extract<br />Tasks</>, icon: CheckCircle2, tone: 'blue', click: () => navigate('/tasks') },
     { title: <>Ask AI</>, caption: '(Past Meetings)', icon: MessageCircleMore, tone: 'pink', click: () => navigate('/chat') },

@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleHelp,
   Gavel,
+  FolderKanban,
   House,
   Layers3,
   Menu,
@@ -20,6 +21,7 @@ import puckImage from '../../assets/esp32-puck-clean.png'
 const links = [
   { label: 'Dashboard', to: '/', icon: House, end: true },
   { label: 'Meetings', to: '/meetings', icon: Video },
+  { label: 'Workspaces', to: '/workspaces', icon: FolderKanban },
   { label: 'Tasks', to: '/tasks', icon: CheckSquare2 },
   { label: 'Decisions', to: '/decisions', icon: Gavel },
   { label: 'Memory', to: '/memory', icon: Layers3 },

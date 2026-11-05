@@ -22,7 +22,7 @@ import {
   UsersRound,
 } from 'lucide-react'
 import useAppData from '../components/layout/useAppData.js'
-import { getAudioUrl, getMeeting } from '../services/api.js'
+import { getAudioUrl, getMeeting, startMeetingProcessing } from '../services/api.js'
 
 function PageIntro({ eyebrow, title, description, action }) {
   return <div className="workspace-intro"><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2><p>{description}</p></div>{action}</div>
@@ -105,7 +105,7 @@ export function Meetings() {
 
   return (
     <div className="workspace-page">
-      <PageIntro eyebrow="Your library" title="All meetings" description="Browse recordings and meeting details saved in your workspace." action={<div className="page-actions"><button className="button-secondary" onClick={() => refreshMeetings()}><ArrowRight size={15} /> Refresh</button><button className="button-secondary" onClick={() => setCreateOpen((open) => !open)}><Plus size={16} /> New meeting</button><button className="button-primary" onClick={openUpload}><Plus size={16} /> Upload audio</button></div>} />
+      <PageIntro eyebrow="Your library" title="All meetings" description="Browse recordings and meeting details saved in your workspace." action={<div className="page-actions"><button className="button-secondary" onClick={() => refreshMeetings()}><ArrowRight size={15} /> Refresh</button><button className="button-secondary" onClick={() => setCreateOpen((open) => !open)}><Plus size={16} /> New meeting</button><button className="button-primary" onClick={() => openUpload()}><Plus size={16} /> Upload audio</button></div>} />
       <section className="content-card glass-panel">
         <div className="filter-toolbar">
           <label className="inline-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a meeting..." /></label>
@@ -144,6 +144,8 @@ export function MeetingDetails() {
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [startingProcessing, setStartingProcessing] = useState(false)
+  const [processingError, setProcessingError] = useState('')
 
   useEffect(() => {
     let active = true
@@ -154,6 +156,51 @@ export function MeetingDetails() {
     })
     return () => { active = false }
   }, [meetingId])
+
+  useEffect(() => {
+    if (!currentState || !['transcribing', 'analyzing'].includes(meeting?.processingStatus)) return undefined
+
+    let active = true
+    const timers = new Set()
+    const schedulePoll = (delay) => {
+      const timer = window.setTimeout(() => {
+        timers.delete(timer)
+        poll()
+      }, delay)
+      timers.add(timer)
+    }
+    const poll = async () => {
+      try {
+        const latest = await getMeeting(meetingId)
+        if (!active) return
+        setMeetingState({ id: meetingId, meeting: latest, loading: false, error: '' })
+        if (['transcribing', 'analyzing'].includes(latest.processingStatus)) {
+          schedulePoll(1800)
+        }
+      } catch {
+        if (active) schedulePoll(5000)
+      }
+    }
+
+    schedulePoll(1200)
+    return () => {
+      active = false
+      timers.forEach((timer) => window.clearTimeout(timer))
+    }
+  }, [currentState, meeting?.processingStatus, meetingId])
+
+  const beginProcessing = async () => {
+    setStartingProcessing(true)
+    setProcessingError('')
+    try {
+      const started = await startMeetingProcessing(meetingId)
+      setMeetingState({ id: meetingId, meeting: started, loading: false, error: '' })
+    } catch (requestError) {
+      setProcessingError(requestError.message || 'Could not start AI processing.')
+    } finally {
+      setStartingProcessing(false)
+    }
+  }
 
   const submitEdit = async (updated) => {
     setSaving(true)
@@ -180,6 +227,9 @@ export function MeetingDetails() {
     }
   }
 
+  const processingStatus = meeting?.processingStatus
+  const processingActive = ['transcribing', 'analyzing'].includes(processingStatus)
+
   if (loading) return <div className="workspace-page"><Link to="/meetings" className="back-link"><ArrowLeft size={16} /> Back to meetings</Link><section className="content-card glass-panel"><p className="muted-copy">Loading meeting…</p></section></div>
   if (error && !meeting) return <div className="workspace-page"><Link to="/meetings" className="back-link"><ArrowLeft size={16} /> Back to meetings</Link><section className="content-card glass-panel"><BlankSlate icon={FileAudio2} title="Could not load meeting" description={error} /></section></div>
   if (!meeting) return <div className="workspace-page"><Link to="/meetings" className="back-link"><ArrowLeft size={16} /> Back to meetings</Link><section className="content-card glass-panel"><BlankSlate icon={FileAudio2} title="Meeting not found" description="This meeting may have been removed or its link may be incorrect." /></section></div>
@@ -194,18 +244,42 @@ export function MeetingDetails() {
       </div>
       {editing && <MeetingForm meeting={meeting} onSave={submitEdit} onCancel={() => setEditing(false)} error={error} submitting={saving} />}
       {error && <p className="form-error" role="alert">{error}</p>}
+      {meeting.audioUrl && <section className={`processing-status glass-panel ${processingActive ? 'processing-active' : ''}`}>
+        <div className="processing-status-copy">
+          <span className="section-icon"><Sparkles size={18} /></span>
+          <div>
+            <strong>{processingActive ? (processingStatus === 'transcribing' ? 'Transcribing audio…' : 'Analyzing meeting…') : processingStatus === 'completed' ? 'AI processing complete' : processingStatus === 'failed' ? 'AI processing failed' : 'Audio ready for AI processing'}</strong>
+            <small>{processingActive ? 'This page will update automatically as processing progresses.' : processingStatus === 'completed' ? 'Transcript, summary, tasks, and decisions are saved.' : processingStatus === 'failed' ? (meeting.processingError || 'Processing could not be completed.') : 'Run transcription and extract meeting notes, tasks, and decisions.'}</small>
+          </div>
+        </div>
+        {processingStatus !== 'completed' && <button className="button-primary" onClick={beginProcessing} disabled={processingActive || startingProcessing}>{processingActive ? 'Processing…' : startingProcessing ? 'Starting…' : processingStatus === 'failed' ? 'Retry processing' : 'Process with AI'}</button>}
+      </section>}
+      {processingError && <p className="form-error" role="alert">{processingError}</p>}
       <div className="detail-grid">
-        <section className="content-card glass-panel detail-summary"><div className="section-heading"><span className="section-icon"><Sparkles size={18} /></span><h3>AI summary</h3></div>{meeting.summary ? <p>{meeting.summary}</p> : <p className="muted-copy">No summary is available. AI processing is not connected.</p>}</section>
+        <section className="content-card glass-panel detail-summary">
+          <div className="section-heading"><span className="section-icon"><Sparkles size={18} /></span><h3>AI summary</h3></div>
+          {meeting.summary ? <p>{meeting.summary}</p> : <p className="muted-copy">{processingActive ? 'Summary will appear after transcript analysis completes.' : 'No summary is available. Upload audio and start AI processing.'}</p>}
+          {meeting.discussionPoints?.length > 0 && <><h4 className="processing-subheading">Discussion points</h4><ul className="bullet-list">{meeting.discussionPoints.map((point, index) => <li key={`${index}-${point}`}>{point}</li>)}</ul></>}
+          {['concerns', 'responses', 'outcomes'].some((key) => meeting.customerInsights?.[key]?.length > 0) && <div className="customer-insights">
+            {[
+              ['concerns', 'Customer concerns'],
+              ['responses', 'Responses'],
+              ['outcomes', 'Outcomes'],
+            ].map(([key, title]) => meeting.customerInsights?.[key]?.length > 0 && <div key={key}><strong>{title}</strong><ul>{meeting.customerInsights[key].map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>)}
+          </div>}
+        </section>
         <section className="content-card glass-panel"><div className="section-heading"><span className="section-icon blue-section-icon"><ListChecks size={18} /></span><h3>Follow-up tasks</h3></div>
-          <p className="muted-copy">Task extraction and meeting-linked tasks are not available from the backend yet.</p>
+          {meeting.tasks?.length ? <ul className="extracted-items">{meeting.tasks.map((task) => <li key={task._id || task.description}><strong>{task.description}</strong><small>{[task.owner && `Owner: ${task.owner}`, task.deadline && `Deadline: ${task.deadline}`].filter(Boolean).join(' · ') || 'No owner or deadline identified'}</small></li>)}</ul> : <p className="muted-copy">{processingActive ? 'Tasks will appear after transcript analysis completes.' : 'No actionable tasks were identified for this meeting.'}</p>}
         </section>
         <section className="content-card glass-panel"><div className="section-heading"><span className="section-icon peach-section-icon"><Gavel size={18} /></span><h3>Decisions</h3></div>
-          <p className="muted-copy">Decision extraction is not available from the backend yet.</p>
+          {meeting.decisions?.length ? <ul className="extracted-items">{meeting.decisions.map((decision) => <li key={decision._id || decision.description}><strong>{decision.description}</strong></li>)}</ul> : <p className="muted-copy">{processingActive ? 'Decisions will appear after transcript analysis completes.' : 'No decisions were identified for this meeting.'}</p>}
         </section>
         <section className="content-card glass-panel audio-card"><div className="section-heading"><span className="section-icon"><FileAudio2 size={18} /></span><h3>Audio recording</h3></div>
           {meeting.audioUrl ? <><p className="muted-copy">Uploaded recording</p><audio src={getAudioUrl(meeting.audioUrl)} controls /></> : <div className="audio-unavailable"><span><FileAudio2 size={20} /></span><p>No recording is attached to this meeting.</p><small>Use Upload Audio to add an MP3 or WAV recording.</small></div>}
         </section>
-        <section className="content-card glass-panel"><div className="section-heading"><span className="section-icon blue-section-icon"><FileAudio2 size={18} /></span><h3>Transcript</h3></div>{meeting.transcript ? <p className="meeting-transcript">{meeting.transcript}</p> : <p className="muted-copy">No transcript is available. Uploading audio does not automatically transcribe it.</p>}</section>
+        <section className="content-card glass-panel"><div className="section-heading"><span className="section-icon blue-section-icon"><FileAudio2 size={18} /></span><h3>Transcript</h3></div>
+          {meeting.transcriptSegments?.length ? <div className="transcript-segments">{meeting.transcriptSegments.map((segment, index) => <p key={`${index}-${segment.start ?? 'segment'}`}><strong>{segment.speakerLabel && `${segment.speakerLabel}: `}</strong>{segment.text}</p>)}</div> : meeting.transcript ? <p className="meeting-transcript">{meeting.transcript}</p> : <p className="muted-copy">{processingActive ? 'The transcript will appear here after transcription completes.' : 'No transcript is available. Upload audio and start AI processing.'}</p>}
+        </section>
       </div>
     </div>
   )

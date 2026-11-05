@@ -29,6 +29,13 @@ router.post('/:meetingId', async (req, res, next) => {
     if (!meeting) {
       return res.status(404).json({ success: false, message: 'Meeting not found.', data: null })
     }
+    if (['transcribing', 'analyzing'].includes(meeting.processingStatus)) {
+      return res.status(409).json({
+        success: false,
+        message: 'This meeting is being processed. Wait for processing to finish before replacing its audio.',
+        data: null,
+      })
+    }
     req.meeting = meeting
     return next()
   } catch (error) {
@@ -41,6 +48,18 @@ router.post('/:meetingId', async (req, res, next) => {
 
   const previousAudioUrl = req.meeting.audioUrl
   req.meeting.audioUrl = `/uploads/meetings/${req.file.filename}`
+  req.meeting.processingStatus = 'uploaded'
+  req.meeting.processingError = null
+  req.meeting.processingStartedAt = null
+  req.meeting.processingCompletedAt = null
+  req.meeting.processingAudioUrl = null
+  req.meeting.transcript = null
+  req.meeting.transcriptSegments = []
+  req.meeting.summary = null
+  req.meeting.discussionPoints = []
+  req.meeting.customerInsights = { concerns: [], responses: [], outcomes: [] }
+  req.meeting.tasks = []
+  req.meeting.decisions = []
   try {
     await req.meeting.save()
     await removeStoredAudio(previousAudioUrl).catch((error) => {

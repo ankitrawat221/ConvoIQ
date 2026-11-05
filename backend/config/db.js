@@ -89,7 +89,10 @@ async function connectDB() {
   }
 
   try {
-    await mongoose.connect(mongoUri, { authSource: 'admin' })
+    await mongoose.connect(mongoUri, {
+      authSource: 'admin',
+      writeConcern: { w: 'majority' },
+    })
     console.log('MongoDB connected successfully.')
   } catch (error) {
     const category = getMongoErrorCategory(error)
