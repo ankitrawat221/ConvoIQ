@@ -9,7 +9,10 @@ const meetingRoutes = require('./routes/meetingRoutes')
 const audioRoutes = require('./routes/audioRoutes')
 const workspaceRoutes = require('./routes/workspaceRoutes')
 const aiRoutes = require('./routes/aiRoutes')
-const { markInterruptedProcessingAsFailed } = require('./services/meetingProcessingService')
+const {
+  clearLegacyOpenAIProcessingErrors,
+  markInterruptedProcessingAsFailed,
+} = require('./services/meetingProcessingService')
 
 const app = express()
 const port = process.env.PORT || 5000
@@ -71,6 +74,10 @@ async function startServer() {
   try {
     await connectDB()
     await markInterruptedProcessingAsFailed()
+    const clearedLegacyErrors = await clearLegacyOpenAIProcessingErrors()
+    if (clearedLegacyErrors.modifiedCount > 0) {
+      console.log(`Cleared ${clearedLegacyErrors.modifiedCount} legacy OpenAI processing error(s).`)
+    }
     app.listen(port, () => {
       console.log(`ConvoIQ backend listening on port ${port}`)
     })

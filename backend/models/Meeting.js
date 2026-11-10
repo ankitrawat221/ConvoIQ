@@ -27,8 +27,24 @@ const transcriptSegmentSchema = new mongoose.Schema(
 const taskSchema = new mongoose.Schema(
   {
     description: { type: String, required: true, trim: true },
+    status: {
+      type: String,
+      enum: ['pending', 'in_progress', 'completed', 'cancelled'],
+      default: 'pending',
+    },
     owner: { type: String, trim: true, default: null },
     deadline: { type: String, trim: true, default: null },
+    evidence: { type: String, trim: true, default: null },
+    evidenceStart: { type: Number, min: 0, default: null },
+    evidenceEnd: { type: Number, min: 0, default: null },
+    supportingEvidence: {
+      type: [{
+        text: { type: String, trim: true },
+        start: { type: Number, min: 0, default: null },
+        end: { type: Number, min: 0, default: null },
+      }],
+      default: [],
+    },
   },
   { timestamps: true },
 )
@@ -36,8 +52,48 @@ const taskSchema = new mongoose.Schema(
 const decisionSchema = new mongoose.Schema(
   {
     description: { type: String, required: true, trim: true },
+    decisionMaker: {
+      type: String,
+      enum: ['customer', 'agent', 'mutual', null],
+      default: null,
+    },
+    evidence: { type: String, trim: true, default: null },
+    evidenceStart: { type: Number, min: 0, default: null },
+    evidenceEnd: { type: Number, min: 0, default: null },
   },
   { timestamps: true },
+)
+
+const analysisStageSchema = new mongoose.Schema(
+  {
+    status: {
+      type: String,
+      enum: ['pending', 'processing', 'completed', 'empty', 'failed'],
+      default: 'pending',
+    },
+    error: { type: String, default: null },
+    completedAt: { type: Date, default: null },
+  },
+  { _id: false },
+)
+
+const analysisDiagnosticSchema = new mongoose.Schema(
+  {
+    stage: { type: String, required: true },
+    model: { type: String, required: true },
+    endpoint: { type: String, required: true },
+    promptLength: { type: Number, required: true },
+    transcriptHash: { type: String, required: true },
+    options: { type: mongoose.Schema.Types.Mixed, default: {} },
+    responseStatus: { type: Number, default: null },
+    rawResponse: { type: String, default: null, maxlength: 12000 },
+    rawResponseLength: { type: Number, min: 0, default: null },
+    rawResponseTruncated: { type: Boolean, default: false },
+    error: { type: String, default: null, maxlength: 500 },
+    validationRejections: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false },
 )
 
 const meetingSchema = new mongoose.Schema(
@@ -65,7 +121,7 @@ const meetingSchema = new mongoose.Schema(
     },
     processingStatus: {
       type: String,
-      enum: ['uploaded', 'transcribing', 'analyzing', 'completed', 'failed'],
+      enum: ['uploaded', 'transcribing', 'transcription_completed', 'analyzing', 'completed', 'failed', 'cancelled'],
       default: null,
     },
     processingError: {
@@ -80,9 +136,35 @@ const meetingSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    processingProgress: {
+      type: Number,
+      min: 0,
+      max: 100,
+      default: 0,
+    },
+    processingStage: {
+      type: String,
+      default: null,
+    },
+    processingLastCompletedStage: {
+      type: String,
+      default: null,
+    },
+    processingProgressUpdatedAt: {
+      type: Date,
+      default: null,
+    },
     processingAudioUrl: {
       type: String,
       default: null,
+    },
+    processingTranscript: {
+      type: String,
+      default: null,
+    },
+    processingTranscriptSegments: {
+      type: [transcriptSegmentSchema],
+      default: [],
     },
     audioUrl: {
       type: String,
@@ -113,6 +195,21 @@ const meetingSchema = new mongoose.Schema(
     decisions: {
       type: [decisionSchema],
       default: [],
+    },
+    unresolvedQuestions: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: [],
+    },
+    analysisStages: {
+      summary: { type: analysisStageSchema, default: () => ({}) },
+      tasks: { type: analysisStageSchema, default: () => ({}) },
+      decisions: { type: analysisStageSchema, default: () => ({}) },
+      unresolvedQuestions: { type: analysisStageSchema, default: () => ({}) },
+    },
+    analysisDiagnostics: {
+      type: [analysisDiagnosticSchema],
+      default: [],
+      validate: (items) => items.length <= 12,
     },
     participants: {
       type: [participantSchema],

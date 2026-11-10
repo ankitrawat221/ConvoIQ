@@ -139,14 +139,56 @@ async function updateMeeting(req, res) {
   try {
     const meeting = await Meeting.findById(req.params.id)
     if (!meeting) return sendError(res, 404, 'Meeting not found.')
+    const transcriptChanged = Object.hasOwn(fields, 'transcript') && fields.transcript !== meeting.transcript
+    if (transcriptChanged && ['transcribing', 'transcription_completed', 'analyzing'].includes(meeting.processingStatus)) {
+      return sendError(res, 409, 'Wait for meeting processing to finish before changing its transcript.')
+    }
 
     meeting.set(fields)
+    if (transcriptChanged) {
+      meeting.set({
+        summary: null,
+        discussionPoints: [],
+        customerInsights: { concerns: [], responses: [], outcomes: [] },
+        tasks: [],
+        decisions: [],
+        unresolvedQuestions: [],
+        processingStatus: null,
+        processingError: null,
+        processingStartedAt: null,
+        processingCompletedAt: null,
+        processingAudioUrl: null,
+        processingTranscript: null,
+        processingTranscriptSegments: [],
+      })
+    }
     await meeting.save()
     return res.status(200).json({
       success: true,
       message: 'Meeting updated successfully.',
       data: meeting,
     })
+  } catch (error) {
+    return sendModelError(res, error)
+  }
+}
+
+async function updateMeetingTaskStatus(req, res) {
+  if (!isValidMeetingId(req.params.id) || !mongoose.isValidObjectId(req.params.taskId)) {
+    return sendError(res, 400, 'Meeting or task ID is invalid.')
+  }
+  const allowedStatuses = new Set(['pending', 'in_progress', 'completed', 'cancelled'])
+  if (!isObjectBody(req.body) || !allowedStatuses.has(req.body.status)) {
+    return sendError(res, 400, 'Task status is invalid.', ['status'])
+  }
+  try {
+    const meeting = await Meeting.findOneAndUpdate(
+      { _id: req.params.id, 'tasks._id': req.params.taskId },
+      { $set: { 'tasks.$.status': req.body.status } },
+      { returnDocument: 'after', runValidators: true },
+    )
+    if (!meeting) return sendError(res, 404, 'Meeting or task not found.')
+    return res.status(200).json({ success: true, message: 'Task status updated successfully.', data: meeting })
   } catch (error) {
     return sendModelError(res, error)
   }
@@ -210,6 +252,7 @@ module.exports = {
   getAllMeetings,
   getMeetingById,
   updateMeeting,
+  updateMeetingTaskStatus,
   deleteMeeting,
   updateMeetingWorkspace,
 }

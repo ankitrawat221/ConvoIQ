@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -22,7 +22,7 @@ import {
   UsersRound,
 } from 'lucide-react'
 import useAppData from '../components/layout/useAppData.js'
-import { getAudioUrl, getMeeting, startMeetingProcessing } from '../services/api.js'
+import { getAudioUrl, getMeeting, startMeetingProcessing, updateMeetingTaskStatus } from '../services/api.js'
 
 function PageIntro({ eyebrow, title, description, action }) {
   return <div className="workspace-intro"><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2><p>{description}</p></div>{action}</div>
@@ -30,6 +30,28 @@ function PageIntro({ eyebrow, title, description, action }) {
 
 function BlankSlate({ icon: Icon, title, description }) {
   return <div className="empty-state"><span><Icon size={23} /></span><strong>{title}</strong><p>{description}</p></div>
+}
+
+function getEmptyAnalysisMessage(processingStatus, label, processingError, stageStatus) {
+  if (stageStatus === 'failed') {
+    return `${label} extraction failed. ${processingError || 'Retry this analysis stage.'}`
+  }
+  if (stageStatus === 'processing' || stageStatus === 'pending') {
+    return `${label} will appear after transcript analysis completes.`
+  }
+  if (stageStatus === 'empty') {
+    return `No ${label.toLowerCase()} identified.`
+  }
+  if (['transcribing', 'transcription_completed', 'analyzing'].includes(processingStatus)) {
+    return `${label} will appear after transcript analysis completes.`
+  }
+  if (processingStatus === 'completed') {
+    return `No ${label.toLowerCase()} identified.`
+  }
+  if (processingStatus === 'failed') {
+    return processingError || 'Analysis failed. Review the processing error above and retry.'
+  }
+  return `Process this meeting to identify ${label.toLowerCase()}.`
 }
 
 function MeetingStatus({ status }) {
@@ -43,11 +65,97 @@ function dateTimeInput(value) {
   return local.toISOString().slice(0, 16)
 }
 
+function formatTranscriptTimestamp(seconds) {
+  const wholeSeconds = Math.floor(seconds)
+  const minutes = Math.floor(wholeSeconds / 60)
+  const remainder = wholeSeconds % 60
+  const hours = Math.floor(minutes / 60)
+  const minutePart = String(minutes % 60).padStart(2, '0')
+  const secondPart = String(remainder).padStart(2, '0')
+  return hours > 0
+    ? `${String(hours).padStart(2, '0')}:${minutePart}:${secondPart}`
+    : `${minutePart}:${secondPart}`
+}
+
+function evidenceTimestamp(item) {
+  return Number.isFinite(item.evidenceStart) && Number.isFinite(item.evidenceEnd)
+    ? `Transcript ${formatTranscriptTimestamp(item.evidenceStart)}–${formatTranscriptTimestamp(item.evidenceEnd)}`
+    : null
+}
+
+function processingProgressValue(meeting) {
+  if (meeting?.processingStatus === 'completed') return 100
+  if (Number.isFinite(Number(meeting?.processingProgress))) return Math.max(0, Math.min(100, Number(meeting.processingProgress)))
+  return { uploaded: 10, transcribing: 15, transcription_completed: 50, analyzing: 50 }[meeting?.processingStatus] || 0
+}
+
+function processingStageLabel(meeting, progress) {
+  if (meeting?.processingStatus === 'completed') return 'Processing completed'
+  if (meeting?.processingStatus === 'failed') return meeting.processingStage || 'Processing failed'
+  if (meeting?.processingStatus === 'cancelled') return meeting.processingStage || 'Processing cancelled'
+  if (meeting?.processingStage) return meeting.processingStage
+  if (progress >= 85) return 'Unresolved questions extracted'
+  if (progress >= 78) return 'Decisions extracted'
+  if (progress >= 70) return 'Follow-up tasks extracted'
+  if (progress >= 60) return 'AI summary generated'
+  if (progress >= 50) return 'Transcription completed'
+  if (progress >= 15) return 'Transcription in progress'
+  if (progress >= 10) return 'Audio uploaded'
+  return 'Waiting to start'
+}
+
+function SummaryBlock({ title, items, className = '' }) {
+  if (!items?.length) return null
+  return <div className={`summary-block ${className}`}><h4>{title}</h4><ul>{items.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>
+}
+
+function TaskStatusLabel({ status }) {
+  const labels = { pending: 'Pending', in_progress: 'In progress', completed: 'Completed', cancelled: 'Cancelled' }
+  return labels[status] || 'Pending'
+}
+
+function MeetingTaskCard({ task, onStatusChange }) {
+  return <li className="meeting-task-card">
+    <div className="task-card-main">
+      <strong>{task.description}</strong>
+      <div className="task-card-meta">
+        {task.owner && <span>Owner: {task.owner}</span>}
+        {task.deadline && <span>Deadline: {task.deadline}</span>}
+        {evidenceTimestamp(task) && <span>{evidenceTimestamp(task)}</span>}
+      </div>
+    </div>
+    <label className={`task-status-control task-status-${task.status || 'pending'}`}>
+      <span className="sr-only">Status for {task.description}</span>
+      <select value={task.status || 'pending'} onChange={(event) => onStatusChange(task, event.target.value)} disabled={!task._id}>
+        <option value="pending">Pending</option>
+        <option value="in_progress">In progress</option>
+        <option value="completed">Completed</option>
+        <option value="cancelled">Cancelled</option>
+      </select>
+      <span aria-hidden="true"><TaskStatusLabel status={task.status || 'pending'} /></span>
+    </label>
+    {task.evidence && <p className="task-evidence">“{task.evidence}”</p>}
+    {task.supportingEvidence?.map((item, index) => <p className="task-evidence" key={`${index}-${item.text}`}>Supporting evidence: “{item.text}”</p>)}
+  </li>
+}
+
+function DecisionCard({ decision }) {
+  return <li className="meeting-insight-card">
+    <strong>{decision.description}</strong>
+    <div className="insight-card-meta">
+      {decision.decisionMaker && <span>Decision by: {decision.decisionMaker[0].toUpperCase() + decision.decisionMaker.slice(1)}</span>}
+      {evidenceTimestamp(decision) && <span>{evidenceTimestamp(decision)}</span>}
+    </div>
+    {decision.evidence && <p className="insight-evidence">“{decision.evidence}”</p>}
+  </li>
+}
+
 function MeetingForm({ meeting, onSave, onCancel, error, submitting }) {
   const [title, setTitle] = useState(meeting?.title || '')
   const [description, setDescription] = useState(meeting?.description || '')
   const [meetingDate, setMeetingDate] = useState(dateTimeInput(meeting?.meetingDate))
   const [participants, setParticipants] = useState((meeting?.participantNames || []).join(', '))
+  const [transcript, setTranscript] = useState(meeting?.transcript || '')
 
   const submit = (event) => {
     event.preventDefault()
@@ -56,7 +164,7 @@ function MeetingForm({ meeting, onSave, onCancel, error, submitting }) {
       description: description.trim(),
       meetingDate: new Date(meetingDate).toISOString(),
       participants: participants.split(',').map((name) => name.trim()).filter(Boolean).map((name) => ({ name })),
-      ...(meeting ? { duration: meeting.durationMinutes } : {}),
+      ...(meeting ? { duration: meeting.durationMinutes, transcript } : {}),
     })
   }
 
@@ -68,6 +176,7 @@ function MeetingForm({ meeting, onSave, onCancel, error, submitting }) {
       <label>Date and time<input type="datetime-local" value={meetingDate} onChange={(event) => setMeetingDate(event.target.value)} required /></label>
       <label>Participants<input value={participants} onChange={(event) => setParticipants(event.target.value)} placeholder="Names separated by commas" /></label>
     </div>
+    {meeting && <label>Transcript<textarea value={transcript} onChange={(event) => setTranscript(event.target.value)} rows={8} placeholder="Paste the completed meeting transcript here. Audio is not transcribed automatically." /></label>}
     {error && <p className="form-error" role="alert">{error}</p>}
     <div className="form-actions"><button type="button" className="button-secondary" onClick={onCancel} disabled={submitting}>Cancel</button><button className="button-primary" disabled={submitting}>{submitting ? 'Saving…' : 'Save meeting'}</button></div>
   </form>
@@ -134,7 +243,7 @@ export function Meetings() {
 
 export function MeetingDetails() {
   const { meetingId } = useParams()
-  const { saveMeeting, removeMeeting } = useAppData()
+  const { saveMeeting, removeMeeting, refreshMeetings } = useAppData()
   const navigate = useNavigate()
   const [meetingState, setMeetingState] = useState({ id: null, meeting: null, loading: true, error: '' })
   const currentState = meetingState.id === meetingId
@@ -146,6 +255,10 @@ export function MeetingDetails() {
   const [deleting, setDeleting] = useState(false)
   const [startingProcessing, setStartingProcessing] = useState(false)
   const [processingError, setProcessingError] = useState('')
+  const [statusRefreshError, setStatusRefreshError] = useState('')
+  const [refreshingStatus, setRefreshingStatus] = useState(false)
+
+  const fetchLatestMeeting = useCallback(() => getMeeting(meetingId), [meetingId])
 
   useEffect(() => {
     let active = true
@@ -158,7 +271,7 @@ export function MeetingDetails() {
   }, [meetingId])
 
   useEffect(() => {
-    if (!currentState || !['transcribing', 'analyzing'].includes(meeting?.processingStatus)) return undefined
+    if (!currentState || !['transcribing', 'transcription_completed', 'analyzing'].includes(meeting?.processingStatus)) return undefined
 
     let active = true
     const timers = new Set()
@@ -171,14 +284,25 @@ export function MeetingDetails() {
     }
     const poll = async () => {
       try {
-        const latest = await getMeeting(meetingId)
+        const latest = await fetchLatestMeeting()
         if (!active) return
+        setStatusRefreshError('')
         setMeetingState({ id: meetingId, meeting: latest, loading: false, error: '' })
-        if (['transcribing', 'analyzing'].includes(latest.processingStatus)) {
+        if (['transcribing', 'transcription_completed', 'analyzing'].includes(latest.processingStatus)) {
           schedulePoll(1800)
+        } else {
+          try {
+            await refreshMeetings()
+          } catch {
+            if (active) {
+              setStatusRefreshError('Meeting status was refreshed, but the meeting list could not be updated.')
+            }
+          }
         }
-      } catch {
-        if (active) schedulePoll(5000)
+      } catch (requestError) {
+        if (!active) return
+        setStatusRefreshError(`Could not refresh processing status: ${requestError.message}`)
+        schedulePoll(5000)
       }
     }
 
@@ -187,16 +311,57 @@ export function MeetingDetails() {
       active = false
       timers.forEach((timer) => window.clearTimeout(timer))
     }
-  }, [currentState, meeting?.processingStatus, meetingId])
+  }, [currentState, fetchLatestMeeting, meeting?.processingStatus, meetingId, refreshMeetings])
 
-  const beginProcessing = async () => {
+  const retryStatusRefresh = async () => {
+    setRefreshingStatus(true)
+    try {
+      const latest = await fetchLatestMeeting()
+      setMeetingState({ id: meetingId, meeting: latest, loading: false, error: '' })
+      setStatusRefreshError('')
+      if (!['transcribing', 'transcription_completed', 'analyzing'].includes(latest.processingStatus)) {
+        try {
+          await refreshMeetings()
+        } catch {
+          setStatusRefreshError('Meeting status was refreshed, but the meeting list could not be updated.')
+        }
+      }
+    } catch (requestError) {
+      setStatusRefreshError(`Could not refresh processing status: ${requestError.message}`)
+    } finally {
+      setRefreshingStatus(false)
+    }
+  }
+
+  const beginProcessing = async (mode = 'audio') => {
     setStartingProcessing(true)
     setProcessingError('')
+    setStatusRefreshError('')
+    const optimisticMeeting = {
+      ...meeting,
+      processingStatus: mode === 'analysis' || meeting.processingTranscript ? 'analyzing' : 'transcribing',
+      processingError: null,
+    }
+    setMeetingState({ id: meetingId, meeting: optimisticMeeting, loading: false, error: '' })
     try {
-      const started = await startMeetingProcessing(meetingId)
+      const started = mode === 'analysis' && !meeting.processingTranscript
+        ? await startMeetingProcessing(meetingId, { transcript: meeting.transcript })
+        : await startMeetingProcessing(meetingId)
       setMeetingState({ id: meetingId, meeting: started, loading: false, error: '' })
+      await refreshMeetings()
     } catch (requestError) {
       setProcessingError(requestError.message || 'Could not start AI processing.')
+      try {
+        const latest = await getMeeting(meetingId)
+        setMeetingState({ id: meetingId, meeting: latest, loading: false, error: '' })
+      } catch {
+        setMeetingState({
+          id: meetingId,
+          meeting: { ...optimisticMeeting, processingStatus: 'failed' },
+          loading: false,
+          error: '',
+        })
+      }
     } finally {
       setStartingProcessing(false)
     }
@@ -215,6 +380,17 @@ export function MeetingDetails() {
     }
   }
 
+  const changeTaskStatus = async (task, status) => {
+    if (!task?._id) return
+    try {
+      const savedMeeting = await updateMeetingTaskStatus(meetingId, task._id, status)
+      setMeetingState({ id: meetingId, meeting: savedMeeting, loading: false, error: '' })
+      await refreshMeetings()
+    } catch (requestError) {
+      setMeetingState((current) => ({ ...current, error: requestError.message }))
+    }
+  }
+
   const deleteCurrentMeeting = async () => {
     if (!window.confirm(`Delete "${meeting.title}"? This cannot be undone.`)) return
     setDeleting(true)
@@ -228,7 +404,13 @@ export function MeetingDetails() {
   }
 
   const processingStatus = meeting?.processingStatus
-  const processingActive = ['transcribing', 'analyzing'].includes(processingStatus)
+  const processingActive = ['transcribing', 'transcription_completed', 'analyzing'].includes(processingStatus)
+  const hasAudio = Boolean(meeting?.processingAudioUrl || meeting?.audioUrl)
+  const processingTranscript = meeting?.processingTranscript || meeting?.transcript
+  const analysisFailed = Boolean(meeting?.processingTranscript?.trim())
+    || (!meeting?.processingAudioUrl && Boolean(meeting?.transcript?.trim()))
+  const processingProgress = processingProgressValue(meeting)
+  const processingStage = processingStageLabel(meeting, processingProgress)
 
   if (loading) return <div className="workspace-page"><Link to="/meetings" className="back-link"><ArrowLeft size={16} /> Back to meetings</Link><section className="content-card glass-panel"><p className="muted-copy">Loading meeting…</p></section></div>
   if (error && !meeting) return <div className="workspace-page"><Link to="/meetings" className="back-link"><ArrowLeft size={16} /> Back to meetings</Link><section className="content-card glass-panel"><BlankSlate icon={FileAudio2} title="Could not load meeting" description={error} /></section></div>
@@ -244,42 +426,84 @@ export function MeetingDetails() {
       </div>
       {editing && <MeetingForm meeting={meeting} onSave={submitEdit} onCancel={() => setEditing(false)} error={error} submitting={saving} />}
       {error && <p className="form-error" role="alert">{error}</p>}
-      {meeting.audioUrl && <section className={`processing-status glass-panel ${processingActive ? 'processing-active' : ''}`}>
+      {(hasAudio || meeting.transcript) && <section className={`processing-status glass-panel ${processingActive ? 'processing-active' : ''}`}>
         <div className="processing-status-copy">
           <span className="section-icon"><Sparkles size={18} /></span>
-          <div>
-            <strong>{processingActive ? (processingStatus === 'transcribing' ? 'Transcribing audio…' : 'Analyzing meeting…') : processingStatus === 'completed' ? 'AI processing complete' : processingStatus === 'failed' ? 'AI processing failed' : 'Audio ready for AI processing'}</strong>
-            <small>{processingActive ? 'This page will update automatically as processing progresses.' : processingStatus === 'completed' ? 'Transcript, summary, tasks, and decisions are saved.' : processingStatus === 'failed' ? (meeting.processingError || 'Processing could not be completed.') : 'Run transcription and extract meeting notes, tasks, and decisions.'}</small>
+           <div>
+             <div className="processing-progress-heading"><strong>{processingStatus === 'completed' ? 'Meeting processing completed' : processingStatus === 'failed' ? 'Meeting processing failed' : processingStatus === 'cancelled' ? 'Meeting processing cancelled' : processingActive ? 'Processing meeting…' : hasAudio ? 'Audio uploaded and ready' : 'Transcript ready for AI analysis'}</strong><b>{processingProgress}%</b></div>
+             <div className="processing-progress-track" role="progressbar" aria-label="Meeting processing progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={processingProgress}><span style={{ width: `${processingProgress}%` }} /></div>
+             <small>Current stage: {processingStage}</small>
+             {meeting.processingLastCompletedStage && processingStatus !== 'completed' && <small>Last completed: {meeting.processingLastCompletedStage}</small>}
+            <strong>{processingStatus === 'transcribing' ? 'Transcription in progress…' : processingStatus === 'transcription_completed' || processingStatus === 'analyzing' ? 'AI analysis in progress…' : processingStatus === 'completed' ? 'Meeting processing complete' : processingStatus === 'failed' ? analysisFailed ? 'AI analysis failed' : 'Transcription failed' : hasAudio ? 'Audio uploaded and ready' : 'Transcript ready for AI analysis'}</strong>
+            <small>{processingActive ? 'This page updates automatically as each stage completes.' : processingStatus === 'completed' ? 'Transcript, summary, tasks, decisions, and unresolved questions are saved.' : processingStatus === 'failed' ? (meeting.processingError || 'Processing could not be completed. Choose a retry option below.') : processingStatus === 'cancelled' ? 'Processing was cancelled before all stages completed.' : hasAudio ? meeting.processingAudioUrl && meeting.transcript ? 'The previous transcript and analysis remain saved until this recording finishes processing.' : 'Start one-click transcription and local AI analysis.' : 'Analyze the saved transcript with the local Qwen model.'}</small>
+            {hasAudio && <ol className="processing-stages" aria-label="Meeting processing stages">
+              <li className="stage-complete"><CheckCircle2 size={14} /> Audio uploaded</li>
+              <li className={processingStatus === 'transcribing' ? 'stage-current' : processingStatus === 'transcription_completed' || processingStatus === 'analyzing' || processingStatus === 'completed' && processingTranscript?.trim() ? 'stage-complete' : processingStatus === 'failed' && !analysisFailed ? 'stage-failed' : ''}>
+                {processingStatus === 'transcription_completed' || processingStatus === 'analyzing' || processingStatus === 'completed' && processingTranscript?.trim() ? <CheckCircle2 size={14} /> : <span className="stage-indicator" />}
+                {processingStatus === 'transcribing' ? 'Transcription in progress' : processingStatus === 'transcription_completed' || processingStatus === 'analyzing' || processingStatus === 'completed' && processingTranscript?.trim() ? 'Transcription completed' : processingStatus === 'failed' && !analysisFailed ? 'Transcription failed' : 'Transcription pending'}
+              </li>
+              <li className={processingStatus === 'analyzing' ? 'stage-current' : processingStatus === 'completed' ? 'stage-complete' : processingStatus === 'failed' && analysisFailed ? 'stage-failed' : ''}>
+                {processingStatus === 'completed' ? <CheckCircle2 size={14} /> : <span className="stage-indicator" />}
+                {processingStatus === 'analyzing' ? 'AI analysis in progress' : processingStatus === 'completed' ? 'AI analysis completed' : processingStatus === 'failed' && analysisFailed ? 'AI analysis failed' : 'AI analysis pending'}
+              </li>
+            </ol>}
           </div>
         </div>
-        {processingStatus !== 'completed' && <button className="button-primary" onClick={beginProcessing} disabled={processingActive || startingProcessing}>{processingActive ? 'Processing…' : startingProcessing ? 'Starting…' : processingStatus === 'failed' ? 'Retry processing' : 'Process with AI'}</button>}
+        <div className="processing-actions">
+          {hasAudio && !processingActive && processingStatus !== 'completed' && processingStatus !== 'failed' && <button className="button-primary" onClick={() => beginProcessing('audio')} disabled={startingProcessing}>{startingProcessing ? 'Starting…' : 'Process Meeting & Generate Insights'}</button>}
+          {hasAudio && processingStatus === 'failed' && <>
+            <button className="button-primary" onClick={() => beginProcessing('audio')} disabled={startingProcessing}>{startingProcessing ? 'Starting…' : meeting.processingTranscript ? 'Retry analysis' : 'Retry transcription'}</button>
+            {!meeting.processingAudioUrl && meeting.transcript?.trim() && <button className="button-secondary" onClick={() => beginProcessing('analysis')} disabled={startingProcessing}>Retry analysis</button>}
+          </>}
+          {!hasAudio && meeting.transcript?.trim() && processingStatus !== 'completed' && <button className="button-primary" onClick={() => beginProcessing('analysis')} disabled={processingActive || startingProcessing}>{processingActive || startingProcessing ? 'Analyzing…' : processingStatus === 'failed' ? 'Retry analysis' : 'Analyze transcript'}</button>}
+          {processingStatus === 'completed' && meeting.transcript?.trim() && <button className="button-secondary" onClick={() => beginProcessing('analysis')} disabled={startingProcessing}>{startingProcessing ? 'Starting…' : 'Re-analyze transcript'}</button>}
+        </div>
+        {statusRefreshError && <div className="processing-actions">
+          <p className="form-error" role="alert">{statusRefreshError}</p>
+          <button className="button-secondary" onClick={retryStatusRefresh} disabled={refreshingStatus}>{refreshingStatus ? 'Refreshing…' : 'Refresh status'}</button>
+        </div>}
       </section>}
       {processingError && <p className="form-error" role="alert">{processingError}</p>}
-      <div className="detail-grid">
+      <div className="detail-insights">
         <section className="content-card glass-panel detail-summary">
-          <div className="section-heading"><span className="section-icon"><Sparkles size={18} /></span><h3>AI summary</h3></div>
-          {meeting.summary ? <p>{meeting.summary}</p> : <p className="muted-copy">{processingActive ? 'Summary will appear after transcript analysis completes.' : 'No summary is available. Upload audio and start AI processing.'}</p>}
-          {meeting.discussionPoints?.length > 0 && <><h4 className="processing-subheading">Discussion points</h4><ul className="bullet-list">{meeting.discussionPoints.map((point, index) => <li key={`${index}-${point}`}>{point}</li>)}</ul></>}
-          {['concerns', 'responses', 'outcomes'].some((key) => meeting.customerInsights?.[key]?.length > 0) && <div className="customer-insights">
-            {[
-              ['concerns', 'Customer concerns'],
-              ['responses', 'Responses'],
-              ['outcomes', 'Outcomes'],
-            ].map(([key, title]) => meeting.customerInsights?.[key]?.length > 0 && <div key={key}><strong>{title}</strong><ul>{meeting.customerInsights[key].map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>)}
-          </div>}
+          <div className="section-heading"><span className="section-icon"><Sparkles size={18} /></span><div><span className="section-kicker">AI-generated</span><h3>Meeting summary</h3></div></div>
+          {meeting.summary ? <p className="summary-overview">{meeting.summary}</p> : <p className="muted-copy">{processingActive ? 'Summary will appear after transcript analysis completes.' : 'No summary is available. Add a transcript and analyze it to generate one.'}</p>}
+          <div className="summary-sections">
+            <SummaryBlock title="Key discussion points" items={meeting.discussionPoints} />
+            <SummaryBlock title="Important outcomes" items={[...(meeting.customerInsights?.outcomes || [])]} />
+            <SummaryBlock title="Next steps" items={(meeting.tasks || []).filter((task) => !['completed', 'cancelled'].includes(task.status)).map((task) => task.description)} />
+          </div>
         </section>
-        <section className="content-card glass-panel"><div className="section-heading"><span className="section-icon blue-section-icon"><ListChecks size={18} /></span><h3>Follow-up tasks</h3></div>
-          {meeting.tasks?.length ? <ul className="extracted-items">{meeting.tasks.map((task) => <li key={task._id || task.description}><strong>{task.description}</strong><small>{[task.owner && `Owner: ${task.owner}`, task.deadline && `Deadline: ${task.deadline}`].filter(Boolean).join(' · ') || 'No owner or deadline identified'}</small></li>)}</ul> : <p className="muted-copy">{processingActive ? 'Tasks will appear after transcript analysis completes.' : 'No actionable tasks were identified for this meeting.'}</p>}
+
+        <section className="content-card glass-panel tasks-section">
+          <div className="section-heading"><span className="section-icon blue-section-icon"><ListChecks size={18} /></span><div><span className="section-kicker">Follow through</span><h3>Follow-up tasks</h3></div>{meeting.tasks?.length > 0 && <span className="section-count">{meeting.tasks.length}</span>}</div>
+          {meeting.tasks?.length ? <ul className="meeting-task-list">{meeting.tasks.map((task) => <MeetingTaskCard key={task._id || task.description} task={task} onStatusChange={changeTaskStatus} />)}</ul> : <div className="compact-empty"><ListChecks size={18} /><span>{getEmptyAnalysisMessage(processingStatus, 'Tasks', meeting.processingError, meeting.analysisStages?.tasks?.status)}</span></div>}
         </section>
-        <section className="content-card glass-panel"><div className="section-heading"><span className="section-icon peach-section-icon"><Gavel size={18} /></span><h3>Decisions</h3></div>
-          {meeting.decisions?.length ? <ul className="extracted-items">{meeting.decisions.map((decision) => <li key={decision._id || decision.description}><strong>{decision.description}</strong></li>)}</ul> : <p className="muted-copy">{processingActive ? 'Decisions will appear after transcript analysis completes.' : 'No decisions were identified for this meeting.'}</p>}
-        </section>
+
+        <div className="detail-lower-grid">
+          <section className="content-card glass-panel">
+            <div className="section-heading"><span className="section-icon peach-section-icon"><Gavel size={18} /></span><div><span className="section-kicker">Confirmed choices</span><h3>Decisions</h3></div>{meeting.decisions?.length > 0 && <span className="section-count">{meeting.decisions.length}</span>}</div>
+            {meeting.decisions?.length ? <ul className="meeting-insight-list">{meeting.decisions.map((decision) => <DecisionCard key={decision._id || decision.description} decision={decision} />)}</ul> : <div className="compact-empty"><Gavel size={18} /><span>{getEmptyAnalysisMessage(processingStatus, 'Decisions', meeting.processingError, meeting.analysisStages?.decisions?.status)}</span></div>}
+          </section>
+
+          <section className="content-card glass-panel">
+            <div className="section-heading"><span className="section-icon"><MessageCircleMore size={18} /></span><div><span className="section-kicker">Needs attention</span><h3>Unresolved questions</h3></div>{meeting.unresolvedQuestions?.length > 0 && <span className="section-count">{meeting.unresolvedQuestions.length}</span>}</div>
+            {meeting.unresolvedQuestions?.length ? <ul className="meeting-insight-list">{meeting.unresolvedQuestions.map((item, index) => {
+              const structuredItem = item && typeof item === 'object'
+              const question = typeof item === 'string' ? item : item?.question
+              return <li className="meeting-insight-card" key={`${index}-${question}`}><strong>{question}</strong>{structuredItem && evidenceTimestamp(item) && <div className="insight-card-meta"><span>{evidenceTimestamp(item)}</span></div>}{structuredItem && item.evidence && <p className="insight-evidence">“{item.evidence}”</p>}</li>
+            })}</ul> : <div className="compact-empty"><MessageCircleMore size={18} /><span>No unresolved questions identified.</span></div>}
+          </section>
+        </div>
+
+        <div className="detail-support-grid">
         <section className="content-card glass-panel audio-card"><div className="section-heading"><span className="section-icon"><FileAudio2 size={18} /></span><h3>Audio recording</h3></div>
-          {meeting.audioUrl ? <><p className="muted-copy">Uploaded recording</p><audio src={getAudioUrl(meeting.audioUrl)} controls /></> : <div className="audio-unavailable"><span><FileAudio2 size={20} /></span><p>No recording is attached to this meeting.</p><small>Use Upload Audio to add an MP3 or WAV recording.</small></div>}
+          {hasAudio ? <><p className="muted-copy">Uploaded recording</p><audio src={getAudioUrl(meeting.processingAudioUrl || meeting.audioUrl)} controls /></> : <div className="audio-unavailable"><span><FileAudio2 size={20} /></span><p>No recording is attached to this meeting.</p><small>Use Upload Audio to add an MP3 or WAV recording.</small></div>}
         </section>
         <section className="content-card glass-panel"><div className="section-heading"><span className="section-icon blue-section-icon"><FileAudio2 size={18} /></span><h3>Transcript</h3></div>
-          {meeting.transcriptSegments?.length ? <div className="transcript-segments">{meeting.transcriptSegments.map((segment, index) => <p key={`${index}-${segment.start ?? 'segment'}`}><strong>{segment.speakerLabel && `${segment.speakerLabel}: `}</strong>{segment.text}</p>)}</div> : meeting.transcript ? <p className="meeting-transcript">{meeting.transcript}</p> : <p className="muted-copy">{processingActive ? 'The transcript will appear here after transcription completes.' : 'No transcript is available. Upload audio and start AI processing.'}</p>}
+          {meeting.transcriptSegments?.length ? <div className="transcript-segments">{meeting.transcriptSegments.map((segment, index) => <p key={`${index}-${segment.start ?? 'segment'}`}><strong>{segment.speakerLabel && `${segment.speakerLabel}: `}</strong>{segment.text}</p>)}</div> : meeting.transcript ? <p className="meeting-transcript">{meeting.transcript}</p> : <p className="muted-copy">{processingStatus === 'transcribing' ? 'Transcription is in progress.' : 'No transcript is available yet. Process the uploaded recording to create one.'}</p>}
         </section>
+        </div>
       </div>
     </div>
   )

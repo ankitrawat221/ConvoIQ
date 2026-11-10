@@ -188,7 +188,7 @@ export default function Dashboard() {
       </div>
       {summaryPreview && <section className="summary-preview glass-panel">
         <span className="summary-preview-icon"><Sparkles size={17} /></span>
-        <div><strong>AI processing is not connected</strong><p>Audio uploads are stored with their meeting. Transcription, summaries, tasks, and decisions are not generated yet.</p><small>No AI service was contacted.</small></div>
+        <div><strong>Local meeting analysis is available</strong><p>Open a meeting, add its completed transcript, and analyze it with Ollama. Audio uploads are not transcribed automatically.</p><small>Audio playback and upload remain available.</small></div>
         <button onClick={() => setSummaryPreview(false)} aria-label="Dismiss sample summary">×</button>
       </section>}
       <div className="dashboard-secondary-grid">

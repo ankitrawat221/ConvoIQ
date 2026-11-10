@@ -35,6 +35,7 @@ function normalizeMeeting(meeting) {
   const duration = Number(meeting.duration)
   return {
     ...meeting,
+    audioUrl: meeting.processingAudioUrl || meeting.audioUrl,
     id: meeting._id || meeting.id,
     workspaceId: meeting.workspaceId ? String(meeting.workspaceId) : null,
     date: formatMeetingDate(meeting.meetingDate),
@@ -62,9 +63,18 @@ export async function getMeeting(id) {
   return normalizeMeeting(await request(`/api/meetings/${encodeURIComponent(id)}`))
 }
 
-export async function startMeetingProcessing(id) {
+export async function startMeetingProcessing(id, { transcript } = {}) {
+  if (typeof id !== 'string' || !/^[a-f\d]{24}$/i.test(id.trim())) {
+    throw new Error('A valid meeting must be selected before processing starts.')
+  }
   return normalizeMeeting(await request(`/api/meetings/${encodeURIComponent(id)}/process`, {
     method: 'POST',
+    ...(typeof transcript === 'string'
+      ? {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ transcript }),
+        }
+      : {}),
   }))
 }
 
@@ -81,6 +91,14 @@ export async function updateMeeting(id, meeting) {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(meeting),
+  }))
+}
+
+export async function updateMeetingTaskStatus(meetingId, taskId, status) {
+  return normalizeMeeting(await request(`/api/meetings/${encodeURIComponent(meetingId)}/tasks/${encodeURIComponent(taskId)}/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
   }))
 }
 

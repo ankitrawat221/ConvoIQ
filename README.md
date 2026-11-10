@@ -20,10 +20,11 @@ Meeting outcomes are easy to lose across recordings, notes, decisions, and follo
 - Create meetings and upload audio directly into a workspace.
 - Retrieve meetings through a workspace-ID-filtered backend endpoint.
 - Express health endpoint, meeting CRUD, audio upload, and workspace routes.
-- Local Ollama prompt-test endpoint using the `qwen2.5:3b` model.
+- Local Ollama prompt-test endpoint and meeting transcript analysis using the `qwen2.5:3b` model.
 - Mongoose meeting/workspace schemas and MongoDB Atlas connection configuration.
-- Explicitly started OpenAI audio transcription with diarized speaker labels and structured meeting analysis.
-- Saved transcripts, summaries, discussion points, customer insights, action items, decisions, and processing state.
+- Meeting summaries, discussion points, customer insights, action items, decisions, unresolved questions, and processing state saved on the existing meeting record.
+- Audio uploads remain available for playback; after upload, start transcription and analysis from the meeting details page.
+- Local Faster-Whisper transcription and Ollama analysis run in sequence when meeting processing is started.
 - Separate frontend and backend npm manifests and lockfiles.
 
 ### Demo-only or not yet connected
@@ -31,8 +32,9 @@ Meeting outcomes are easy to lose across recordings, notes, decisions, and follo
 - Recording controls, global AI chat, summary generation, analytics, notifications, and device status are simulations or sample content.
 - Workspace chat accepts a workspace-scoped request but returns HTTP 501 until an AI provider is configured; it does not generate answers.
 - Workspace-specific long-term memory and semantic retrieval are not implemented.
-- Real external transcription and analysis require an OpenAI API key configured in the backend.
-- Backend tests use mocked provider responses and do not call OpenAI.
+- The meeting analysis endpoint requires an existing transcript and a running local Ollama server; it does not require an OpenAI API key.
+- No transcription is performed by the meeting analysis endpoint. Add a completed transcript to the meeting before analyzing it.
+- Backend tests use mocked provider responses and do not call Ollama.
 
 ## Technology stack
 
@@ -128,19 +130,49 @@ Use your own values only in the local `.env` file. URL-encode special characters
 
 The frontend uses `http://localhost:5000` by default. Set `VITE_API_BASE_URL` in the frontend environment if the backend is hosted elsewhere.
 
-## OpenAI meeting processing
+## Local meeting processing
 
-Add these values to the local `backend/.env` file and restart the backend:
+Run Ollama locally at `http://127.0.0.1:11434` and make sure `qwen2.5:3b` is installed. No `OPENAI_API_KEY` is needed for transcription or meeting analysis.
 
-```dotenv
-OPENAI_API_KEY=<your OpenAI API key>
-OPENAI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize
-OPENAI_ANALYSIS_MODEL=gpt-4o-mini
+Create a meeting and upload an MP3 or WAV recording. Open its details and choose **Process Meeting & Generate Insights**. The frontend calls `POST /api/meetings/:id/process` without a transcript body. The backend transcribes the saved audio with Faster-Whisper, saves the transcript and timestamped segments, sends the transcript to local Ollama, then saves the structured analysis on that same meeting. The details page polls for status and displays the saved transcript and results.
+
+If transcription fails, retry it without re-uploading. If analysis fails after a transcript is saved, retry analysis using the saved transcript. A transcript can also be supplied directly for analysis:
+
+```json
+{
+  "transcript": "Paste the actual, completed meeting transcript here."
+}
 ```
 
-Only `OPENAI_API_KEY` is required; the model variables shown are defaults. The backend uses the OpenAI Audio Transcriptions API for transcript text and speaker turns, followed by a JSON-mode chat completion for the summary, discussion points, customer concerns/responses/outcomes, tasks, and decisions. Speaker IDs are displayed as `Speaker 1`, `Speaker 2`, etc.; the application does not infer participant names.
+The backend validates the analysis and its supporting transcript evidence, saves the summary, discussion points, customer insights, action items, decisions, unresolved questions, and processing status to that meeting, and returns the saved record. Processing the same transcript again replaces its extracted lists rather than appending duplicate items. Changing a transcript clears its previous analysis.
 
-After uploading a recording, choose **Start AI processing** in the upload dialog, or open the meeting and choose **Process with AI**. Processing status and errors are stored with the meeting; failed jobs can be retried. The original audio stays available for playback. Oversized PCM WAV files are locally converted to mono 16-bit 16 kHz WAV to fit the provider's 25 MB per-file limit. Oversized MP3s and unsupported oversized WAV encodings must be converted to a smaller mono 16-bit 16 kHz WAV before processing. Audio is sent from the backend to OpenAI only after processing is explicitly started.
+If neither a transcript nor an audio recording is available, processing returns a clear error. Ollama/model and transcription failures are reported without exposing internal details. The original audio remains available for playback.
+
+## Local audio transcription (stages 1-2)
+
+The Faster-Whisper CLI uses the multilingual `small` model on CPU with int8. Its first run downloads the model weights; audio decoding and transcription then run locally. The backend invokes the CLI through `meetingProcessingService` and validates its JSON result. Speaker diarization is not available in this setup, so it returns timestamps without guessed speaker names. Uploading saves audio; processing starts when requested from the meeting details page.
+
+From the repository root in PowerShell:
+
+```powershell
+python -m venv backend\transcription-service\.venv
+backend\transcription-service\.venv\Scripts\python.exe -m pip install -r backend\transcription-service\requirements.txt
+backend\transcription-service\.venv\Scripts\python.exe backend\transcription-service\transcribe.py backend\uploads\meetings\<recording>.wav
+```
+
+MP3 files are supported in the same way. The command writes a JSON object with transcript text, timestamped segments, detected language, and a flag indicating that speaker identification is unavailable. The backend uses that virtual environment by default; set `FASTER_WHISPER_PYTHON` to an alternate Python executable if needed.
+
+## Local speaker diarization
+
+The standalone `backend\transcription-service\diarize.py` command runs the Hugging Face `pyannote/speaker-diarization-community-1` pipeline locally. Before its first run, sign in to Hugging Face, accept the model conditions, and create an access token. Keep the token out of source control and chat. In PowerShell, enter it without echoing it and run diarization on an MP3 or WAV:
+
+```powershell
+$secureToken = Read-Host "Hugging Face token" -AsSecureString
+$env:HF_TOKEN = [System.Net.NetworkCredential]::new("", $secureToken).Password
+backend\transcription-service\.venv\Scripts\python.exe backend\transcription-service\diarize.py backend\uploads\meetings\<recording>.wav --device cpu
+```
+
+The initial model download requires internet access; model files are cached locally and inference then runs on the selected device. The JSON output contains speaker turns (including overlaps), an exclusive turn list for transcript alignment, a count, and anonymous `SPEAKER_00`-style IDs. IDs do not identify people or carry across meetings. Run output-format tests with `backend\transcription-service\.venv\Scripts\python.exe -m unittest discover -s backend\transcription-service -p "test_*.py"`.
 
 ## API endpoints
 
@@ -155,7 +187,7 @@ The backend provides:
 | `GET` | `/api/meetings/:id` | Retrieve a meeting, including processing state and generated results |
 | `PUT` | `/api/meetings/:id` | Update a meeting |
 | `DELETE` | `/api/meetings/:id` | Delete a meeting |
-| `POST` | `/api/meetings/:id/process` | Start asynchronous transcription and AI analysis |
+| `POST` | `/api/meetings/:id/process` | With no body, transcribe saved audio and analyze it; with a `transcript` body, analyze that text |
 | `POST` | `/api/workspaces` | Create a workspace |
 | `GET` | `/api/workspaces` | List workspaces with meeting counts and recent meeting |
 | `GET` | `/api/workspaces/:id` | Retrieve a workspace |
@@ -169,7 +201,7 @@ The API connects to MongoDB before listening for requests. Workspace assignments
 
 ## Local Ollama prompt test
 
-The Stage 2 AI test endpoint sends prompts only to the local Ollama server at `http://127.0.0.1:11434`, using the `qwen2.5:3b` model. Ensure Ollama is running and that model is installed before calling it. This endpoint does not use OpenAI, does not process meeting recordings, and does not change the existing meeting, workspace, or audio-upload APIs.
+The prompt-test endpoint and meeting analysis use the local Ollama server at `http://127.0.0.1:11434` with the `qwen2.5:3b` model. Ensure Ollama is running and that model is installed before calling either endpoint. Meeting processing can transcribe a saved recording before analysis, or analyze an existing transcript.
 
 In Thunder Client, create a request with:
 
@@ -189,7 +221,7 @@ A successful request returns HTTP 200 with the model name and generated response
 
 ## Development status
 
-**Current stage:** frontend dashboard, meeting CRUD/audio upload, workspace CRUD and organization, a local Ollama prompt-test endpoint, and the existing explicitly started processing pipeline are implemented. The Ollama endpoint is independent of audio processing. Workspace chat and isolated long-term memory remain pending.
+**Current stage:** frontend dashboard, meeting CRUD/audio upload, workspace CRUD and organization, local Ollama prompt testing, and transcript-based meeting analysis are implemented. Audio transcription is not started by the meeting analysis endpoint. Workspace chat and isolated long-term memory remain pending.
 
 ## Planned improvements
 

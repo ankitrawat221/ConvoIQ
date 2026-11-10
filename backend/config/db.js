@@ -82,7 +82,13 @@ function getMongoErrorCategory(error) {
 }
 
 async function connectDB() {
-  const mongoUri = process.env.MONGO_URI
+  const configuredMongoUri = process.env.MONGO_URI
+
+  // Prevent accidental clipboard/file-path suffixes from becoming part of the
+  // MongoDB write concern (a malformed value can still allow reads to appear
+  // healthy while every write fails).
+  const mongoUri = configuredMongoUri?.match(/^(mongodb(?:\+srv)?:\/\/.*?[?&]w=majority)(?:[A-Za-z]:[\\/].*)?$/i)?.[1]
+    || configuredMongoUri
 
   if (!mongoUri) {
     throw new Error('MONGO_URI is not configured in backend/.env.')

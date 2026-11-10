@@ -1,169 +1,464 @@
 const assert = require('node:assert/strict')
-const fs = require('node:fs/promises')
-const os = require('node:os')
 const path = require('node:path')
+const { randomUUID } = require('node:crypto')
 const { after, test } = require('node:test')
 
-const temporaryFiles = []
+const Meeting = require('../models/Meeting')
+const localTranscriptionService = require('../services/localTranscriptionService')
 const originalFetch = global.fetch
 const originalApiKey = process.env.OPENAI_API_KEY
+const originalFindById = Meeting.findById
+const originalFindOneAndUpdate = Meeting.findOneAndUpdate
+const originalTranscribeAudio = localTranscriptionService.transcribeAudio
 
-function createPcmWave({ seconds, sampleRate = 48000, channels = 2 }) {
-  const frames = seconds * sampleRate
-  const data = Buffer.alloc(frames * channels * 2)
-  const wave = Buffer.alloc(44 + data.length)
-  wave.write('RIFF', 0)
-  wave.writeUInt32LE(wave.length - 8, 4)
-  wave.write('WAVEfmt ', 8)
-  wave.writeUInt32LE(16, 16)
-  wave.writeUInt16LE(1, 20)
-  wave.writeUInt16LE(channels, 22)
-  wave.writeUInt32LE(sampleRate, 24)
-  wave.writeUInt32LE(sampleRate * channels * 2, 28)
-  wave.writeUInt16LE(channels * 2, 32)
-  wave.writeUInt16LE(16, 34)
-  wave.write('data', 36)
-  wave.writeUInt32LE(data.length, 40)
-  data.copy(wave, 44)
-  return wave
-}
-
-async function writeTemporaryWave(buffer) {
-  const filePath = path.join(os.tmpdir(), `convoiq-test-${Date.now()}-${Math.random()}.wav`)
-  await fs.writeFile(filePath, buffer, { flag: 'wx' })
-  temporaryFiles.push(filePath)
-  return filePath
-}
-
-after(async () => {
+after(() => {
   global.fetch = originalFetch
+  Meeting.findById = originalFindById
+  Meeting.findOneAndUpdate = originalFindOneAndUpdate
+  localTranscriptionService.transcribeAudio = originalTranscribeAudio
   if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY
   else process.env.OPENAI_API_KEY = originalApiKey
-  await Promise.all(temporaryFiles.map((filePath) => fs.unlink(filePath).catch(() => {})))
 })
 
-test('downsamples oversized stereo PCM WAV to mono 16 kHz under the provider limit', async () => {
-  const { prepareTranscriptionFile } = require('../services/meetingProcessingService')
-  const sourcePath = await writeTemporaryWave(createPcmWave({ seconds: 140 }))
-  const prepared = await prepareTranscriptionFile(sourcePath)
+test('rejects unsupported recording formats before starting local transcription', async () => {
+  const { transcribeAudio } = require('../services/localTranscriptionService')
+  await assert.rejects(transcribeAudio('recording.mp4'), (error) => (
+    error.code === 'UNSUPPORTED_AUDIO_FORMAT' &&
+    error.message === 'Only MP3 and WAV recordings are supported.'
+  ))
+})
+
+test('reports missing recordings before starting local transcription', async () => {
+  const { transcribeAudio } = require('../services/localTranscriptionService')
+  const missingPath = path.join(require('node:os').tmpdir(), `${randomUUID()}.wav`)
+  await assert.rejects(transcribeAudio(missingPath), (error) => (
+    error.code === 'AUDIO_NOT_FOUND' &&
+    error.message === 'The audio recording was not found. Upload it again.'
+  ))
+})
+
+test('transcribes meeting audio, saves Ollama results, and returns the saved meeting', async () => {
+  const { processMeetingAudio } = require('../services/meetingProcessingService')
+  const meetingId = '507f1f77bcf86cd799439015'
+  const audioUrl = '/uploads/meetings/test-meeting.wav'
+  const transcript = 'Customer: The washer is under warranty. Customer: I choose Friday for the appointment. Agent: I will schedule a technician for Friday.'
+  const meeting = { _id: meetingId, audioUrl, processingStatus: 'uploaded' }
+  const analysis = {
+    summary: 'The customer requested warranty service for a washing machine.',
+    discussionPoints: [{
+      text: 'A Friday appointment was chosen.',
+      evidence: 'Customer: I choose Friday for the appointment.',
+    }],
+    customerInsights: {
+      concerns: [{ text: 'The washer needs service.', evidence: 'Customer: The washer is under warranty.' }],
+      responses: [{
+        text: 'The agent will schedule a technician.',
+        evidence: 'Agent: I will schedule a technician for Friday.',
+        concernEvidence: 'Customer: The washer is under warranty.',
+      }],
+      outcomes: [],
+    },
+    tasks: [{
+      description: 'Schedule a technician visit',
+      owner: 'Agent',
+      deadline: 'Friday',
+      evidence: 'Agent: I will schedule a technician for Friday.',
+    }],
+    decisions: [{
+      description: 'The customer chose the Friday appointment.',
+      decisionMaker: 'customer',
+      evidence: 'Customer: I choose Friday for the appointment.',
+    }],
+    unresolvedQuestions: [],
+  }
+  const updates = []
+  let saved = { ...meeting }
+  Meeting.findById = async (id) => {
+    assert.equal(id, meetingId)
+    return meeting
+  }
+  Meeting.findOneAndUpdate = async (query, update) => {
+    updates.push({ query, update })
+    saved = { ...saved, ...update.$set }
+    return { ...saved }
+  }
+  localTranscriptionService.transcribeAudio = async (filePath) => {
+    assert.ok(filePath.endsWith(path.join('test-meeting.wav')))
+    return {
+      transcript,
+      segments: [{ text: transcript, start: 0, end: 4.5 }],
+      speakerIdentificationAvailable: false,
+    }
+  }
+  global.fetch = async (_url, options) => {
+    assert.ok(JSON.parse(options.body).prompt.includes(transcript))
+    return new Response(JSON.stringify({ response: JSON.stringify(analysis) }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
 
   try {
-    const output = await fs.readFile(prepared.filePath)
-    assert.equal(prepared.temporary, true)
-    assert.equal(output.toString('ascii', 0, 4), 'RIFF')
-    assert.equal(output.readUInt16LE(22), 1)
-    assert.equal(output.readUInt32LE(24), 16000)
-    assert.equal(output.readUInt16LE(34), 16)
-    assert.ok(output.length < 24_000_000)
+    const result = await processMeetingAudio(meetingId)
+    assert.deepEqual(updates.map(({ update }) => update.$set.processingStatus).filter(Boolean), [
+      'transcribing',
+      'transcription_completed',
+      'analyzing',
+      'completed',
+    ])
+    assert.equal(updates[0].query.audioUrl, audioUrl)
+    assert.equal(updates[0].update.$set.processingAudioUrl, audioUrl)
+    assert.equal(updates[1].update.$set.processingTranscript, transcript)
+    assert.deepEqual(result.tasks, [{
+      ...analysis.tasks[0],
+      evidenceStart: 0,
+      evidenceEnd: 4.5,
+    }])
+    assert.deepEqual(result.decisions, [{
+      ...analysis.decisions[0],
+      evidenceStart: 0,
+      evidenceEnd: 4.5,
+    }])
+    assert.equal(result.processingStatus, 'completed')
   } finally {
-    await fs.unlink(prepared.filePath)
+    localTranscriptionService.transcribeAudio = originalTranscribeAudio
   }
 })
 
-test('transcribes with diarized JSON without manually setting multipart Content-Type', async () => {
-  process.env.OPENAI_API_KEY = 'test-key'
-  const { transcribeAudio } = require('../services/meetingProcessingService')
-  const sourcePath = await writeTemporaryWave(createPcmWave({ seconds: 1, sampleRate: 16000, channels: 1 }))
-  let request
-  global.fetch = async (url, options) => {
-    request = { url, options }
+test('rejects audio processing without audio and blocks duplicate requests', async () => {
+  const { processMeetingAudio } = require('../services/meetingProcessingService')
+  const meetingId = '507f1f77bcf86cd799439016'
+  Meeting.findById = async () => ({ _id: meetingId, audioUrl: null, processingStatus: null })
+  await assert.rejects(processMeetingAudio(meetingId), (error) => error.code === 'AUDIO_REQUIRED')
+
+  Meeting.findById = async () => ({
+    _id: meetingId,
+    audioUrl: '/uploads/meetings/test-meeting.wav',
+    processingStatus: 'transcribing',
+  })
+  await assert.rejects(processMeetingAudio(meetingId), (error) => error.code === 'DUPLICATE_PROCESSING')
+})
+
+test('keeps processing results isolated between two meetings', async () => {
+  const { processMeetingAudio } = require('../services/meetingProcessingService')
+  const firstId = '507f1f77bcf86cd799439017'
+  const secondId = '507f1f77bcf86cd799439018'
+  const meetings = new Map([
+    [firstId, { _id: firstId, audioUrl: '/uploads/meetings/first.wav', processingStatus: 'uploaded' }],
+    [secondId, { _id: secondId, audioUrl: '/uploads/meetings/second.wav', processingStatus: 'uploaded' }],
+  ])
+  const saved = new Map([[firstId, {}], [secondId, {}]])
+  const updates = []
+  Meeting.findById = async (id) => meetings.get(String(id))
+  Meeting.findOneAndUpdate = async (query, update) => {
+    const id = String(query._id)
+    updates.push({ id, fields: update.$set })
+    saved.set(id, { ...saved.get(id), ...update.$set })
+    return { ...saved.get(id) }
+  }
+  localTranscriptionService.transcribeAudio = async (filePath) => {
+    const isFirst = path.basename(filePath) === 'first.wav'
+    const transcript = isFirst ? 'First meeting transcript.' : 'Second meeting transcript.'
+    return { transcript, segments: [{ text: transcript, start: 0, end: 1 }] }
+  }
+  global.fetch = async (_url, options) => {
+    const prompt = JSON.parse(options.body).prompt
+    const first = prompt.includes('First meeting transcript.')
     return new Response(JSON.stringify({
-      text: 'Hello. Yes.',
-      segments: [
-        { text: 'Hello.', start: 0, end: 0.4, speaker_id: 'speaker_0' },
-        { text: 'Yes.', start: 0.5, end: 0.8, speaker_id: 'speaker_1' },
-      ],
+      response: JSON.stringify({
+        summary: first ? 'First meeting summary.' : 'Second meeting summary.',
+        discussionPoints: [],
+        customerInsights: { concerns: [], responses: [], outcomes: [] },
+        tasks: [],
+        decisions: [],
+        unresolvedQuestions: [],
+      }),
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })
   }
 
-  const transcription = await transcribeAudio(sourcePath)
-  assert.equal(request.url, 'https://api.openai.com/v1/audio/transcriptions')
-  assert.equal(request.options.headers.Authorization, 'Bearer test-key')
-  assert.equal(request.options.headers['Content-Type'], undefined)
-  assert.ok(request.options.body instanceof FormData)
-  assert.equal(request.options.body.get('model'), 'gpt-4o-transcribe-diarize')
-  assert.equal(request.options.body.get('response_format'), 'diarized_json')
-  assert.equal(request.options.body.get('chunking_strategy'), 'auto')
-  assert.equal(transcription.transcript, 'Speaker 1: Hello.\nSpeaker 2: Yes.')
-  assert.equal(transcription.segments[0].speakerLabel, 'Speaker 1')
-  assert.equal(transcription.segments[1].speakerLabel, 'Speaker 2')
-})
+  try {
+    await processMeetingAudio(firstId)
+    await processMeetingAudio(secondId)
 
-test('distinguishes quota exhaustion from a rate limit without exposing provider messages', async () => {
-  process.env.OPENAI_API_KEY = 'test-key'
-  const { transcribeAudio } = require('../services/meetingProcessingService')
-  const sourcePath = await writeTemporaryWave(createPcmWave({ seconds: 1, sampleRate: 16000, channels: 1 }))
-  const failures = [
-    {
-      error: { code: 'insufficient_quota', type: 'insufficient_quota', message: 'private provider detail' },
-      expectedCode: 'insufficient_quota',
-      expectedMessage: /no remaining credits or billing may not be active/,
-    },
-    {
-      error: { code: 'rate_limit_exceeded', type: 'requests', message: 'private provider detail' },
-      expectedCode: 'rate_limit_exceeded',
-      expectedType: 'requests',
-      expectedMessage: /request or token rate limit was reached/,
-    },
-    {
-      error: { type: 'insufficient_quota', message: 'private provider detail' },
-      expectedCode: null,
-      expectedType: 'insufficient_quota',
-      expectedMessage: /no remaining credits or billing may not be active/,
-    },
-  ]
-
-  for (const failure of failures) {
-    let requestCount = 0
-    global.fetch = async () => {
-      requestCount += 1
-      return new Response(JSON.stringify({ error: failure.error }), {
-        status: 429,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
-
-    await assert.rejects(transcribeAudio(sourcePath), (error) => {
-      assert.equal(error.status, 429)
-      assert.equal(error.providerCode, failure.expectedCode)
-      assert.equal(error.providerType, failure.expectedType || failure.expectedCode)
-      assert.match(error.message, failure.expectedMessage)
-      assert.doesNotMatch(error.message, /private provider detail|test-key/)
-      return true
-    })
-    assert.equal(requestCount, 1)
+    assert.equal(saved.get(firstId).transcript, 'First meeting transcript.')
+    assert.equal(saved.get(firstId).summary, 'First meeting summary.')
+    assert.equal(saved.get(secondId).transcript, 'Second meeting transcript.')
+    assert.equal(saved.get(secondId).summary, 'Second meeting summary.')
+    assert.ok(updates.every(({ id }) => id === firstId || id === secondId))
+    assert.deepEqual(
+      updates.filter(({ id }) => id === firstId).map(({ fields }) => fields.processingStatus).filter(Boolean),
+      ['transcribing', 'transcription_completed', 'analyzing', 'completed'],
+    )
+    assert.deepEqual(
+      updates.filter(({ id }) => id === secondId).map(({ fields }) => fields.processingStatus).filter(Boolean),
+      ['transcribing', 'transcription_completed', 'analyzing', 'completed'],
+    )
+  } finally {
+    localTranscriptionService.transcribeAudio = originalTranscribeAudio
   }
 })
 
-test('extracts structured meeting analysis using the backend API key', async () => {
-  process.env.OPENAI_API_KEY = 'test-key'
-  const { analyzeTranscript } = require('../services/meetingProcessingService')
-  let request
-  global.fetch = async (url, options) => {
-    request = { url, options }
-    return new Response(JSON.stringify({
-      choices: [{
-        message: {
-          content: JSON.stringify({
-            summary: 'The team agreed to review the draft.',
-            discussionPoints: ['Draft review'],
-            customerInsights: { concerns: [], responses: [], outcomes: [] },
-            tasks: [{ description: 'Review the draft', owner: null, deadline: null }],
-            decisions: [{ description: 'Review the draft before sending.' }],
-          }),
-        },
+test('preserves saved results during replacement processing and retries analysis without retranscribing', async () => {
+  const { processMeetingAudio } = require('../services/meetingProcessingService')
+  const meetingId = '507f1f77bcf86cd799439019'
+  const transcript = 'Replacement recording transcript.'
+  const original = {
+    _id: meetingId,
+    audioUrl: '/uploads/meetings/original.wav',
+    processingAudioUrl: '/uploads/meetings/replacement.wav',
+    processingStatus: 'uploaded',
+    transcript: 'Previously saved transcript.',
+    transcriptSegments: [{ text: 'Previously saved transcript.', start: 0, end: 1 }],
+    summary: 'Previously saved summary.',
+    tasks: [{ description: 'Previously saved task.' }],
+    decisions: [{ description: 'Previously saved decision.' }],
+    unresolvedQuestions: ['Previously saved question?'],
+  }
+  let saved = { ...original }
+  let transcriptionCount = 0
+  Meeting.findById = async () => ({ ...saved })
+  Meeting.findOneAndUpdate = async (_query, update) => {
+    if (update.$set) saved = { ...saved, ...update.$set }
+    for (const field of Object.keys(update.$unset || {})) delete saved[field]
+    return { ...saved }
+  }
+  localTranscriptionService.transcribeAudio = async () => {
+    transcriptionCount += 1
+    return { transcript, segments: [{ text: transcript, start: 0, end: 2 }] }
+  }
+  global.fetch = async () => { throw new TypeError('local Ollama is unavailable') }
+
+  try {
+    await assert.rejects(processMeetingAudio(meetingId), (error) => error.code === 'OLLAMA_UNAVAILABLE')
+    assert.equal(saved.transcript, original.transcript)
+    assert.equal(saved.summary, original.summary)
+    assert.deepEqual(saved.tasks, original.tasks)
+    assert.deepEqual(saved.decisions, original.decisions)
+    assert.deepEqual(saved.unresolvedQuestions, original.unresolvedQuestions)
+    assert.equal(saved.processingTranscript, transcript)
+    assert.equal(saved.processingStatus, 'failed')
+    assert.equal(transcriptionCount, 1)
+
+    global.fetch = async () => new Response(JSON.stringify({
+      response: JSON.stringify({
+        summary: 'Replacement recording summary.',
+        discussionPoints: [],
+        customerInsights: { concerns: [], responses: [], outcomes: [] },
+        tasks: [],
+        decisions: [],
+        unresolvedQuestions: [],
+      }),
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+
+    const result = await processMeetingAudio(meetingId)
+    assert.equal(transcriptionCount, 1)
+    assert.equal(result.audioUrl, original.processingAudioUrl)
+    assert.equal(result.transcript, transcript)
+    assert.equal(result.summary, 'Replacement recording summary.')
+    assert.equal(result.processingStatus, 'completed')
+    assert.equal(saved.processingAudioUrl, undefined)
+    assert.equal(saved.processingTranscript, undefined)
+  } finally {
+    localTranscriptionService.transcribeAudio = originalTranscribeAudio
+  }
+})
+
+test('saves Ollama analysis for the requested meeting without an OpenAI API key', async () => {
+  const { processMeetingTranscript } = require('../services/meetingProcessingService')
+  const meetingId = '507f1f77bcf86cd799439011'
+  const transcript = 'Customer: The washer is under warranty. Customer: I choose Friday for the appointment. Agent: I will schedule a technician for Friday.'
+  const meeting = { _id: meetingId, transcript: '', processingStatus: 'uploaded' }
+  const analysis = {
+    summary: 'The customer requested warranty service for a washing machine.',
+    discussionPoints: [{
+      text: 'A Friday appointment was chosen.',
+      evidence: 'Customer: I choose Friday for the appointment.',
+    }],
+    customerInsights: {
+      concerns: [{ text: 'The washer needs service.', evidence: 'Customer: The washer is under warranty.' }],
+      responses: [{
+        text: 'The agent will schedule a technician.',
+        evidence: 'Agent: I will schedule a technician for Friday.',
+        concernEvidence: 'Customer: The washer is under warranty.',
       }],
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      outcomes: [],
+    },
+    tasks: [{
+      description: 'Schedule a technician visit',
+      owner: 'Agent',
+      deadline: 'Friday',
+      evidence: 'Agent: I will schedule a technician for Friday.',
+    }],
+    decisions: [{
+      description: 'The customer chose the Friday appointment.',
+      decisionMaker: 'customer',
+      evidence: 'Customer: I choose Friday for the appointment.',
+    }],
+    unresolvedQuestions: [],
+  }
+  Meeting.findById = async (id) => {
+    assert.equal(id, meetingId)
+    return meeting
+  }
+  const updates = []
+  Meeting.findOneAndUpdate = async (query, update) => {
+    updates.push({ query, update })
+    return { ...meeting, ...update.$set }
+  }
+  const previousApiKey = process.env.OPENAI_API_KEY
+  delete process.env.OPENAI_API_KEY
+  let request
+  global.fetch = async (url, options) => {
+    request = { url, options }
+    return new Response(JSON.stringify({ response: JSON.stringify(analysis) }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
   }
 
-  const result = await analyzeTranscript('We will review the draft.')
-  assert.equal(request.url, 'https://api.openai.com/v1/chat/completions')
-  assert.equal(request.options.headers.Authorization, 'Bearer test-key')
-  assert.equal(request.options.headers['Content-Type'], 'application/json')
-  const requestBody = JSON.parse(request.options.body)
-  assert.equal(requestBody.model, 'gpt-4o-mini')
-  assert.equal(requestBody.response_format.type, 'json_object')
-  assert.equal(result.tasks[0].owner, null)
-  assert.equal(result.tasks[0].deadline, null)
-  assert.equal(result.decisions[0].description, 'Review the draft before sending.')
+  try {
+    const result = await processMeetingTranscript(meetingId, transcript)
+    assert.equal(request.url, 'http://127.0.0.1:11434/api/generate')
+    assert.ok(JSON.parse(request.options.body).prompt.includes(transcript))
+    assert.equal(updates.filter(({ update }) => update.$set.processingStatus).length, 2)
+    assert.equal(updates[0].query._id, meetingId)
+    assert.equal(updates[0].update.$set.transcript, undefined)
+    assert.ok(updates.find(({ update }) => update.$set.transcript === transcript))
+    assert.deepEqual(result.tasks, analysis.tasks)
+    assert.deepEqual(result.decisions, analysis.decisions)
+    assert.deepEqual(result.unresolvedQuestions, [])
+    assert.equal(result.processingStatus, 'completed')
+  } finally {
+    if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY
+    else process.env.OPENAI_API_KEY = previousApiKey
+  }
+})
+
+test('clears only persisted legacy OpenAI processing errors', async () => {
+  const { clearLegacyOpenAIProcessingErrors } = require('../services/meetingProcessingService')
+  const originalUpdateMany = Meeting.updateMany
+  let request
+  Meeting.updateMany = async (...args) => {
+    request = args
+    return { modifiedCount: 1 }
+  }
+
+  try {
+    const result = await clearLegacyOpenAIProcessingErrors()
+    assert.equal(result.modifiedCount, 1)
+    assert.match(String(request[0].processingError), /OpenAI returned/)
+    assert.equal(request[1].$set.processingError, null)
+    assert.equal(request[1].$set.processingStatus, 'uploaded')
+    assert.equal(request[1].$set.processingAudioUrl, null)
+  } finally {
+    Meeting.updateMany = originalUpdateMany
+  }
+})
+
+test('requires a transcript and rejects duplicate processing before contacting Ollama', async () => {
+  const { processMeetingTranscript } = require('../services/meetingProcessingService')
+  const meetingId = '507f1f77bcf86cd799439012'
+  let updateCount = 0
+  let requestCount = 0
+  Meeting.findById = async () => ({ _id: meetingId, transcript: '  ', processingStatus: null })
+  Meeting.findOneAndUpdate = async () => {
+    updateCount += 1
+    return null
+  }
+  global.fetch = async () => {
+    requestCount += 1
+    throw new Error('Unexpected Ollama request')
+  }
+  await assert.rejects(processMeetingTranscript(meetingId), (error) => error.code === 'TRANSCRIPT_REQUIRED')
+  assert.equal(updateCount, 0)
+  assert.equal(requestCount, 0)
+
+  Meeting.findById = async () => ({ _id: meetingId, transcript: 'Transcript text.', processingStatus: 'analyzing' })
+  await assert.rejects(processMeetingTranscript(meetingId), (error) => error.code === 'DUPLICATE_PROCESSING')
+  assert.equal(updateCount, 0)
+  assert.equal(requestCount, 0)
+})
+
+test('records a safe failed processing state when Ollama is unavailable', async () => {
+  const { processMeetingTranscript } = require('../services/meetingProcessingService')
+  const meetingId = '507f1f77bcf86cd799439013'
+  const meeting = { _id: meetingId, transcript: 'A real transcript.', processingStatus: null }
+  const updates = []
+  Meeting.findById = async () => meeting
+  Meeting.findOneAndUpdate = async (_query, update) => {
+    updates.push(update.$set)
+    return { ...meeting, ...update.$set }
+  }
+  global.fetch = async () => { throw new TypeError('sensitive connection detail') }
+
+  await assert.rejects(processMeetingTranscript(meetingId), (error) => (
+    error.code === 'OLLAMA_UNAVAILABLE' &&
+    error.publicMessage === 'The local Ollama service is unavailable. Start Ollama and retry.' &&
+    !error.message.includes('sensitive connection detail')
+  ))
+  assert.equal(updates[0].processingStatus, 'analyzing')
+  assert.equal(updates[1].processingStatus, 'failed')
+  assert.equal(updates[1].processingError, 'The local Ollama service is unavailable. Start Ollama and retry.')
+})
+
+test('keeps the previous transcript and analysis when replacement transcript analysis fails', async () => {
+  const { processMeetingTranscript } = require('../services/meetingProcessingService')
+  const meetingId = '507f1f77bcf86cd799439020'
+  const original = {
+    _id: meetingId,
+    transcript: 'Previously saved transcript.',
+    summary: 'Previously saved summary.',
+    tasks: [{ description: 'Previously saved task.' }],
+    processingStatus: 'completed',
+  }
+  let saved = { ...original }
+  const updates = []
+  Meeting.findById = async () => ({ ...saved })
+  Meeting.findOneAndUpdate = async (_query, update) => {
+    updates.push(update.$set)
+    saved = { ...saved, ...update.$set }
+    return { ...saved }
+  }
+  global.fetch = async () => { throw new TypeError('local Ollama is unavailable') }
+
+  await assert.rejects(
+    processMeetingTranscript(meetingId, 'Replacement transcript.'),
+    (error) => error.code === 'OLLAMA_UNAVAILABLE',
+  )
+  assert.equal(updates[0].transcript, undefined)
+  assert.equal(saved.transcript, original.transcript)
+  assert.equal(saved.summary, original.summary)
+  assert.deepEqual(saved.tasks, original.tasks)
+  assert.equal(saved.processingStatus, 'failed')
+})
+
+test('reports MongoDB analysis-save failures without exposing internal details', async () => {
+  const { processMeetingTranscript } = require('../services/meetingProcessingService')
+  const meetingId = '507f1f77bcf86cd799439014'
+  const meeting = { _id: meetingId, transcript: 'A real transcript.', processingStatus: null }
+  const statuses = []
+  Meeting.findById = async () => meeting
+  Meeting.findOneAndUpdate = async (_query, update) => {
+    const status = update.$set.processingStatus
+    statuses.push(status)
+    if (status === 'completed') throw new Error('private database detail')
+    return { ...meeting, ...update.$set }
+  }
+  global.fetch = async () => new Response(JSON.stringify({
+    response: JSON.stringify({
+      summary: 'A summary.',
+      discussionPoints: [],
+      customerInsights: { concerns: [], responses: [], outcomes: [] },
+      tasks: [],
+      decisions: [],
+      unresolvedQuestions: [],
+    }),
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+
+  await assert.rejects(processMeetingTranscript(meetingId), (error) => (
+    error.code === 'DATABASE_SAVE_FAILED' &&
+    error.message === 'Meeting analysis could not be saved. Retry processing.' &&
+    !error.message.includes('private database detail')
+  ))
+  assert.deepEqual(statuses.filter(Boolean), ['analyzing', 'completed', 'failed'])
 })

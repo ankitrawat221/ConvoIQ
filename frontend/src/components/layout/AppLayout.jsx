@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { startMeetingProcessing, uploadMeetingAudio } from '../../services/api.js'
+import { uploadMeetingAudio } from '../../services/api.js'
 import Navbar from './Navbar.jsx'
 import { Sidebar } from './Sidebar.jsx'
 
@@ -105,7 +105,7 @@ export default function AppLayout({ context }) {
       await context.refreshMeetings()
       if (uploadCompleteCallback) await uploadCompleteCallback()
       setUploadedMeetingId(meetingId)
-      setUploadSuccess(`Uploaded ${selectedFile.name} successfully. Transcription has not been run.`)
+      setUploadSuccess(`Uploaded ${selectedFile.name} successfully. Open the meeting and choose “Process Meeting & Generate Insights” to transcribe and analyze it.`)
     } catch (error) {
       setUploadError(getErrorMessage(error))
     } finally {
@@ -113,20 +113,10 @@ export default function AppLayout({ context }) {
     }
   }
 
-  const startProcessingFromUpload = async () => {
+  const viewUploadedMeeting = () => {
     if (!uploadedMeetingId) return
-    setUploading(true)
-    setUploadError('')
-    try {
-      await startMeetingProcessing(uploadedMeetingId)
-      await context.refreshMeetings()
-      setUploadOpen(false)
-      navigate(`/meetings/${uploadedMeetingId}`)
-    } catch (error) {
-      setUploadError(getErrorMessage(error))
-    } finally {
-      setUploading(false)
-    }
+    setUploadOpen(false)
+    navigate(`/meetings/${uploadedMeetingId}`)
   }
 
   const openUpload = (workspaceIdOrEvent = '', onUploadComplete = null) => {
@@ -171,7 +161,7 @@ export default function AppLayout({ context }) {
           <form onSubmit={submitUpload}>
             <div className="modal-icon"><span className="audio-glyph"><span /><span /><span /><span /><span /></span></div>
             <h2 id="upload-title">Upload meeting audio</h2>
-            <p>Select a meeting and upload an MP3 or WAV recording. Files are stored by the backend; no transcription is performed.</p>
+            <p>Select an existing meeting or create one, then upload an MP3 or WAV recording. Open its details to transcribe and generate insights.</p>
             <label className="upload-field">Meeting
               <select value={createNewMeeting ? '__new__' : selectedMeetingId} onChange={(event) => {
                 const isNew = event.target.value === '__new__'
@@ -204,7 +194,7 @@ export default function AppLayout({ context }) {
             {uploadSuccess && <p className="upload-success" role="status">{uploadSuccess}</p>}
             <div className="modal-actions">
               <button type="button" className="button-secondary" onClick={() => setUploadOpen(false)} disabled={uploading}>Close</button>
-              {uploadSuccess && <button type="button" className="button-primary" onClick={startProcessingFromUpload} disabled={uploading}>{uploading ? 'Starting…' : 'Start AI processing'}</button>}
+              {uploadSuccess && <button type="button" className="button-primary" onClick={viewUploadedMeeting}>View meeting</button>}
               {!uploadSuccess && <button className="button-primary" disabled={uploading}>{uploading ? 'Uploading…' : 'Upload audio'}</button>}
             </div>
           </form>

@@ -29,7 +29,7 @@ router.post('/:meetingId', async (req, res, next) => {
     if (!meeting) {
       return res.status(404).json({ success: false, message: 'Meeting not found.', data: null })
     }
-    if (['transcribing', 'analyzing'].includes(meeting.processingStatus)) {
+    if (['transcribing', 'transcription_completed', 'analyzing'].includes(meeting.processingStatus)) {
       return res.status(409).json({
         success: false,
         message: 'This meeting is being processed. Wait for processing to finish before replacing its audio.',
@@ -46,31 +46,33 @@ router.post('/:meetingId', async (req, res, next) => {
     return res.status(400).json({ success: false, message: 'Please upload an audio file using the "audio" field.', data: null })
   }
 
-  const previousAudioUrl = req.meeting.audioUrl
-  req.meeting.audioUrl = `/uploads/meetings/${req.file.filename}`
+  const previousProcessingAudioUrl = req.meeting.processingAudioUrl
+  const audioUrl = `/uploads/meetings/${req.file.filename}`
   req.meeting.processingStatus = 'uploaded'
   req.meeting.processingError = null
   req.meeting.processingStartedAt = null
   req.meeting.processingCompletedAt = null
-  req.meeting.processingAudioUrl = null
-  req.meeting.transcript = null
-  req.meeting.transcriptSegments = []
-  req.meeting.summary = null
-  req.meeting.discussionPoints = []
-  req.meeting.customerInsights = { concerns: [], responses: [], outcomes: [] }
-  req.meeting.tasks = []
-  req.meeting.decisions = []
+  req.meeting.processingProgress = 10
+  req.meeting.processingStage = 'Audio uploaded'
+  req.meeting.processingLastCompletedStage = 'Audio uploaded'
+  req.meeting.processingProgressUpdatedAt = new Date()
+  req.meeting.processingAudioUrl = audioUrl
+  req.meeting.processingTranscript = null
+  req.meeting.processingTranscriptSegments = []
   try {
     await req.meeting.save()
-    await removeStoredAudio(previousAudioUrl).catch((error) => {
-      console.error(`Unable to remove replaced meeting audio: ${error.message}`)
-    })
+    if (previousProcessingAudioUrl && previousProcessingAudioUrl !== req.meeting.audioUrl) {
+      await removeStoredAudio(previousProcessingAudioUrl).catch((error) => {
+        console.error(`Unable to remove replaced staged meeting audio: ${error.message}`)
+      })
+    }
     return res.status(200).json({
       success: true,
       message: 'Audio uploaded successfully. Transcription has not been run.',
       data: {
         filename: req.file.filename,
-        audioUrl: req.meeting.audioUrl,
+        audioUrl,
+        processingAudioUrl: audioUrl,
         size: req.file.size,
         meetingId: req.meeting.id,
       },
