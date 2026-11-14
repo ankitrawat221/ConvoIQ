@@ -1,231 +1,330 @@
-# ConvoIQ — AI Smart Meeting Assistant
+# ConvoIQ — AI-Powered Smart Meeting Assistant
 
-ConvoIQ is a meeting-assistant project with a React dashboard and a Node.js/Express API backed by MongoDB and Mongoose. Meeting records, workspaces, audio uploads, and optional AI meeting processing use the backend; device controls and some assistant views remain demonstrations.
+<p align="center">
+  An intelligent meeting assistant designed to simplify meeting management, automate transcription, and extract meaningful insights from conversations.
+</p>
 
-## Problem statement
+---
 
-Meeting outcomes are easy to lose across recordings, notes, decisions, and follow-up work. ConvoIQ is intended to bring those details together so teams can find what was discussed and keep next steps visible.
+## About the Project
 
-## Features and current status
+**ConvoIQ** is an AI-powered Smart Meeting Assistant built to make meetings more productive and organized.
 
-### Implemented
+It provides a centralized platform where users can manage meetings, organize workspaces, upload audio recordings, generate transcripts, and extract important information such as meeting summaries, key discussion points, decisions, and action items.
 
-- Responsive React dashboard with meeting, task, decision, memory, chat, analytics, and settings views.
-- Sample meeting library with title search, category/status filters, meeting details, summaries, and decisions.
-- Create, edit, filter, and update task and decision items in the frontend.
-- Tasks and decisions persist in browser local storage.
-- Meeting records load from the backend; the Meetings page includes all assigned and unassigned meetings.
-- Create, rename, and delete workspaces; deleting a workspace leaves its meetings unassigned.
-- Assign, move, and remove existing meetings from workspaces without duplicating meeting records.
-- Create meetings and upload audio directly into a workspace.
-- Retrieve meetings through a workspace-ID-filtered backend endpoint.
-- Express health endpoint, meeting CRUD, audio upload, and workspace routes.
-- Local Ollama prompt-test endpoint and meeting transcript analysis using the `qwen2.5:3b` model.
-- Mongoose meeting/workspace schemas and MongoDB Atlas connection configuration.
-- Meeting summaries, discussion points, customer insights, action items, decisions, unresolved questions, and processing state saved on the existing meeting record.
-- Audio uploads remain available for playback; after upload, start transcription and analysis from the meeting details page.
-- Local Faster-Whisper transcription and Ollama analysis run in sequence when meeting processing is started.
-- Separate frontend and backend npm manifests and lockfiles.
+The application combines a React-based dashboard with a Node.js backend, MongoDB database, Faster-Whisper for speech-to-text transcription, and Ollama for local AI-powered meeting analysis.
 
-### Demo-only or not yet connected
+## Key Features
 
-- Recording controls, global AI chat, summary generation, analytics, notifications, and device status are simulations or sample content.
-- Workspace chat accepts a workspace-scoped request but returns HTTP 501 until an AI provider is configured; it does not generate answers.
-- Workspace-specific long-term memory and semantic retrieval are not implemented.
-- The meeting analysis endpoint requires an existing transcript and a running local Ollama server; it does not require an OpenAI API key.
-- No transcription is performed by the meeting analysis endpoint. Add a completed transcript to the meeting before analyzing it.
-- Backend tests use mocked provider responses and do not call Ollama.
+### 1. Meeting Management
+- Create, view, update, and delete meetings.
+- Search meetings by title.
+- Filter meetings by category and status.
+- View meeting summaries and important decisions.
 
-## Technology stack
+### 2. Workspace Management
+- Create, rename, and delete workspaces.
+- Organize meetings into different workspaces.
+- Assign, move, and unassign meetings.
+- View meetings associated with individual workspaces.
 
-| Area | Technologies |
-| --- | --- |
-| Frontend | React, Vite, Tailwind CSS, React Router, Lucide |
-| Backend | Node.js, Express, Mongoose |
-| Database | MongoDB Atlas (configured through a local environment variable) |
+### 3. AI Meeting Transcription
+- Upload MP3 and WAV meeting recordings.
+- Convert speech into text using Faster-Whisper.
+- Generate timestamped transcript segments.
+- Support multilingual transcription.
+- Run transcription locally.
 
-## Project structure
+### 4. AI-Powered Meeting Insights
+Using the locally hosted Ollama model, ConvoIQ can extract:
+
+- Meeting summaries.
+- Key discussion points.
+- Customer insights.
+- Action items.
+- Important decisions.
+- Unresolved questions.
+
+The generated information is stored in MongoDB and displayed on the meeting details page.
+
+### 5. Dashboard and Analytics
+- Responsive React dashboard.
+- Meeting overview and management views.
+- Task and decision management.
+- Chat, memory, analytics, and settings interfaces.
+
+**Note:** Some dashboard features currently use demonstration or sample data and are not fully connected to backend services.
+
+## Technology Stack
+
+| Category | Technologies |
+|---|---|
+| Frontend | React.js, Vite, Tailwind CSS |
+| Routing | React Router |
+| Backend | Node.js, Express.js |
+| Database | MongoDB Atlas |
+| ODM | Mongoose |
+| AI Model | Ollama (Qwen 2.5:3B) |
+| Speech Recognition | Faster-Whisper |
+| Speaker Diarization | Pyannote (optional standalone pipeline) |
+| Development Tools | VS Code, Git, GitHub |
+
+## System Architecture
+
+The application follows a frontend-backend architecture.
+
+1. **Frontend:** React dashboard handles user interaction, meeting management, and displaying results.
+2. **Backend:** Node.js and Express handle API requests, meeting operations, workspace management, and audio uploads.
+3. **Database:** MongoDB stores meeting records, workspace information, transcripts, and AI-generated insights.
+4. **Transcription:** Faster-Whisper converts uploaded audio recordings into text.
+5. **AI Processing:** Ollama processes transcripts and extracts structured meeting insights.
+
+## Project Structure
 
 ```text
 ConvoIQ/
+│
 ├── backend/
-│   ├── config/          # MongoDB connection
-│   ├── controllers/     # Meeting and workspace request handlers
-│   ├── models/          # Meeting and workspace schemas
-│   ├── routes/          # Meeting, workspace, and audio API routes
-│   ├── services/        # Meeting processing service
-│   ├── tests/           # Backend processing tests
-│   ├── uploads/         # Local upload directory (private files are ignored)
+│   ├── config/
+│   ├── controllers/
+│   ├── models/
+│   ├── routes/
+│   ├── services/
+│   ├── tests/
+│   ├── transcription-service/
+│   ├── uploads/
 │   ├── server.js
-│   ├── package.json
-│   └── package-lock.json
-└── frontend/
-    ├── public/
-    ├── src/
-    │   ├── assets/
-    │   ├── components/
-    │   ├── data/            # Local demo data
-    │   └── pages/           # Existing pages and the separate Workspaces page
-    ├── package.json
-    └── package-lock.json
+│   └── package.json
+│
+├── frontend/
+│   ├── public/
+│   ├── src/
+│   │   ├── assets/
+│   │   ├── components/
+│   │   ├── data/
+│   │   └── pages/
+│   └── package.json
+│
+├── .gitignore
+└── README.md
 ```
 
-## Requirements
+## Getting Started
+
+Follow these steps to run ConvoIQ locally.
+
+### Prerequisites
+
+Make sure you have installed:
 
 - Node.js and npm
-- A MongoDB Atlas cluster and database user for running the backend
+- MongoDB Atlas account
+- Python (for Faster-Whisper transcription)
+- Ollama
+- Git
 
-## Install and run
+### 1. Clone the Repository
 
-Install dependencies in each project folder:
+```bash
+git clone https://github.com/ankitrawat221/ConvoIQ.git
 
-```sh
-cd frontend
-npm install
+cd ConvoIQ
 ```
 
-In a second terminal, from the project root:
+### 2. Install Backend Dependencies
 
-```sh
+```bash
 cd backend
 npm install
 ```
 
-Configure the backend environment as described below, then start the backend from `backend/`:
+### 3. Install Frontend Dependencies
 
-```sh
+Open another terminal:
+
+```bash
+cd frontend
+npm install
+```
+
+### 4. Configure Environment Variables
+
+Create a `.env` file inside the backend folder.
+
+```env
+MONGO_URI=your_mongodb_connection_string
+PORT=5000
+FRONTEND_URL=http://localhost:5173
+```
+
+Replace the MongoDB connection string with your own credentials.
+
+**Important:** Never upload your actual `.env` file, database credentials, or API secrets to GitHub.
+
+### 5. Configure MongoDB
+
+- Create a MongoDB Atlas cluster.
+- Create a database user.
+- Configure Network Access.
+- Add your MongoDB connection string to the backend `.env` file.
+
+### 6. Configure Ollama
+
+Install Ollama and download the required model:
+
+```bash
+ollama pull qwen2.5:3b
+```
+
+Make sure Ollama is running locally.
+
+### 7. Configure Faster-Whisper
+
+Create a Python virtual environment from the repository root:
+
+```bash
+python -m venv backend/transcription-service/.venv
+```
+
+For Windows PowerShell:
+
+```powershell
+backend\transcription-service\.venv\Scripts\python.exe -m pip install -r backend\transcription-service\requirements.txt
+```
+
+The first transcription run downloads the required model weights.
+
+### 8. Run the Application
+
+**Start the backend:**
+
+```bash
+cd backend
 npm run dev
 ```
 
-Start the frontend from `frontend/` in a separate terminal:
+Backend runs on:
 
-```sh
+```text
+http://localhost:5000
+```
+
+**Start the frontend in another terminal:**
+
+```bash
+cd frontend
 npm run dev
 ```
 
-Vite prints the local frontend URL when it starts (typically `http://localhost:5173`). The backend listens on port `5000` by default.
+Frontend runs on:
 
-Useful frontend checks, run from `frontend/`:
+```text
+http://localhost:5173
+```
 
-```sh
+## How AI Meeting Processing Works
+
+ConvoIQ follows a two-stage processing pipeline:
+
+**Stage 1: Audio Transcription**
+
+- User uploads an MP3 or WAV recording.
+- Faster-Whisper processes the audio locally.
+- The system generates a transcript with timestamps.
+- The transcript is saved against the meeting record.
+
+**Stage 2: AI Meeting Analysis**
+
+- The transcript is sent to the locally running Ollama model.
+- The model analyzes the conversation.
+- Structured meeting insights are generated.
+- Results are saved in MongoDB.
+- The frontend displays the generated insights.
+
+The application can also analyze an existing transcript without uploading an audio recording.
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/health` | Check server status |
+| POST | `/api/ai/test` | Test local Ollama integration |
+| POST | `/api/meetings` | Create a meeting |
+| GET | `/api/meetings` | Get all meetings |
+| GET | `/api/meetings/:id` | Get meeting details |
+| PUT | `/api/meetings/:id` | Update a meeting |
+| DELETE | `/api/meetings/:id` | Delete a meeting |
+| POST | `/api/meetings/:id/process` | Transcribe and analyze meeting |
+| POST | `/api/workspaces` | Create workspace |
+| GET | `/api/workspaces` | Get all workspaces |
+| GET | `/api/workspaces/:id` | Get workspace details |
+| PUT | `/api/workspaces/:id` | Update workspace |
+| DELETE | `/api/workspaces/:id` | Delete workspace |
+| GET | `/api/workspaces/:id/meetings` | Get workspace meetings |
+| POST | `/api/workspaces/:id/chat` | Workspace chat placeholder |
+| PATCH | `/api/meetings/:id/workspace` | Assign or move a meeting |
+
+## Current Development Status
+
+### Implemented
+- React-based dashboard.
+- Meeting CRUD operations.
+- Workspace management.
+- Audio upload functionality.
+- MongoDB integration.
+- Local Faster-Whisper transcription.
+- Ollama-based meeting analysis.
+- Automated extraction of meeting insights.
+- Saving transcripts and generated results.
+
+### In Progress / Planned
+- Workspace-specific AI chat integration.
+- Long-term memory and semantic search.
+- Physical meeting-device integration.
+- Fully connected analytics and notifications.
+- Additional automated API testing.
+
+Some dashboard sections currently contain sample data or demonstration functionality.
+
+## Future Enhancements
+
+- Real-time meeting transcription.
+- Live meeting recording integration.
+- Improved speaker identification.
+- Workspace-specific AI assistant.
+- Retrieval-Augmented Generation (RAG) for meeting memory.
+- Advanced meeting analytics.
+- Cloud deployment and production integration.
+
+## Testing
+
+Frontend checks:
+
+```bash
 npm run lint
 npm run build
 ```
 
-Run backend unit tests with `npm test` from `backend/`. These tests use mocked OpenAI responses and do not upload recordings or contact the provider.
+Backend tests:
 
-## MongoDB Atlas configuration
-
-1. Create an Atlas cluster and database user, and allow your development machine's IP in Network Access.
-2. In Atlas, copy the application connection-string template and replace its placeholders with your own cluster, database, and credentials.
-3. Create `backend/.env` locally (do not commit it) with:
-
-   ```dotenv
-   MONGO_URI=mongodb+srv://<username>:<password>@<cluster-url>/<database>?retryWrites=true&w=majority
-   PORT=5000
-   FRONTEND_URL=http://localhost:5173
-   ```
-
-Use your own values only in the local `.env` file. URL-encode special characters in the database username or password as required by MongoDB. Do not paste credentials or a real connection string into source control, issues, or logs. Environment files are ignored by Git; `.env.example` files are allowed for safe placeholder templates.
-
-The frontend uses `http://localhost:5000` by default. Set `VITE_API_BASE_URL` in the frontend environment if the backend is hosted elsewhere.
-
-## Local meeting processing
-
-Run Ollama locally at `http://127.0.0.1:11434` and make sure `qwen2.5:3b` is installed. No `OPENAI_API_KEY` is needed for transcription or meeting analysis.
-
-Create a meeting and upload an MP3 or WAV recording. Open its details and choose **Process Meeting & Generate Insights**. The frontend calls `POST /api/meetings/:id/process` without a transcript body. The backend transcribes the saved audio with Faster-Whisper, saves the transcript and timestamped segments, sends the transcript to local Ollama, then saves the structured analysis on that same meeting. The details page polls for status and displays the saved transcript and results.
-
-If transcription fails, retry it without re-uploading. If analysis fails after a transcript is saved, retry analysis using the saved transcript. A transcript can also be supplied directly for analysis:
-
-```json
-{
-  "transcript": "Paste the actual, completed meeting transcript here."
-}
+```bash
+npm test
 ```
 
-The backend validates the analysis and its supporting transcript evidence, saves the summary, discussion points, customer insights, action items, decisions, unresolved questions, and processing status to that meeting, and returns the saved record. Processing the same transcript again replaces its extracted lists rather than appending duplicate items. Changing a transcript clears its previous analysis.
+Run these commands from their respective frontend and backend directories.
 
-If neither a transcript nor an audio recording is available, processing returns a clear error. Ollama/model and transcription failures are reported without exposing internal details. The original audio remains available for playback.
+Backend tests use mocked provider responses rather than requiring a live Ollama session.
 
-## Local audio transcription (stages 1-2)
+---
 
-The Faster-Whisper CLI uses the multilingual `small` model on CPU with int8. Its first run downloads the model weights; audio decoding and transcription then run locally. The backend invokes the CLI through `meetingProcessingService` and validates its JSON result. Speaker diarization is not available in this setup, so it returns timestamps without guessed speaker names. Uploading saves audio; processing starts when requested from the meeting details page.
+## Author
 
-From the repository root in PowerShell:
+**Ankit Rawat**
 
-```powershell
-python -m venv backend\transcription-service\.venv
-backend\transcription-service\.venv\Scripts\python.exe -m pip install -r backend\transcription-service\requirements.txt
-backend\transcription-service\.venv\Scripts\python.exe backend\transcription-service\transcribe.py backend\uploads\meetings\<recording>.wav
-```
+B.Tech – Electronics and Communication Engineering
 
-MP3 files are supported in the same way. The command writes a JSON object with transcript text, timestamped segments, detected language, and a flag indicating that speaker identification is unavailable. The backend uses that virtual environment by default; set `FASTER_WHISPER_PYTHON` to an alternate Python executable if needed.
+GitHub: https://github.com/ankitrawat221
 
-## Local speaker diarization
+---
 
-The standalone `backend\transcription-service\diarize.py` command runs the Hugging Face `pyannote/speaker-diarization-community-1` pipeline locally. Before its first run, sign in to Hugging Face, accept the model conditions, and create an access token. Keep the token out of source control and chat. In PowerShell, enter it without echoing it and run diarization on an MP3 or WAV:
-
-```powershell
-$secureToken = Read-Host "Hugging Face token" -AsSecureString
-$env:HF_TOKEN = [System.Net.NetworkCredential]::new("", $secureToken).Password
-backend\transcription-service\.venv\Scripts\python.exe backend\transcription-service\diarize.py backend\uploads\meetings\<recording>.wav --device cpu
-```
-
-The initial model download requires internet access; model files are cached locally and inference then runs on the selected device. The JSON output contains speaker turns (including overlaps), an exclusive turn list for transcript alignment, a count, and anonymous `SPEAKER_00`-style IDs. IDs do not identify people or carry across meetings. Run output-format tests with `backend\transcription-service\.venv\Scripts\python.exe -m unittest discover -s backend\transcription-service -p "test_*.py"`.
-
-## API endpoints
-
-The backend provides:
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/health` | Check backend availability |
-| `POST` | `/api/ai/test` | Send a prompt to local Ollama (`qwen2.5:3b`) and return its response |
-| `POST` | `/api/meetings` | Create a meeting |
-| `GET` | `/api/meetings` | List meetings |
-| `GET` | `/api/meetings/:id` | Retrieve a meeting, including processing state and generated results |
-| `PUT` | `/api/meetings/:id` | Update a meeting |
-| `DELETE` | `/api/meetings/:id` | Delete a meeting |
-| `POST` | `/api/meetings/:id/process` | With no body, transcribe saved audio and analyze it; with a `transcript` body, analyze that text |
-| `POST` | `/api/workspaces` | Create a workspace |
-| `GET` | `/api/workspaces` | List workspaces with meeting counts and recent meeting |
-| `GET` | `/api/workspaces/:id` | Retrieve a workspace |
-| `PUT` | `/api/workspaces/:id` | Rename a workspace or update its description |
-| `DELETE` | `/api/workspaces/:id` | Delete a workspace and unassign, but preserve, its meetings |
-| `GET` | `/api/workspaces/:id/meetings` | Retrieve only meetings assigned to the workspace |
-| `POST` | `/api/workspaces/:id/chat` | Workspace chat placeholder; returns 501 until AI integration |
-| `PATCH` | `/api/meetings/:id/workspace` | Assign, move, or unassign a meeting (`workspaceId: null` unassigns) |
-
-The API connects to MongoDB before listening for requests. Workspace assignments and AI processing results are stored on the existing meeting document; no existing meeting records need to be recreated.
-
-## Local Ollama prompt test
-
-The prompt-test endpoint and meeting analysis use the local Ollama server at `http://127.0.0.1:11434` with the `qwen2.5:3b` model. Ensure Ollama is running and that model is installed before calling either endpoint. Meeting processing can transcribe a saved recording before analysis, or analyze an existing transcript.
-
-In Thunder Client, create a request with:
-
-- **Method:** `POST`
-- **URL:** `http://localhost:5000/api/ai/test`
-- **Header:** `Content-Type: application/json`
-- **Body type:** JSON
-- **Body:**
-
-  ```json
-  {
-    "prompt": "Summarize this meeting in two sentences, then list decisions and action items: The product team reviewed the onboarding redesign. Maya will deliver updated wireframes by Friday. The team decided to run a five-user usability test next Tuesday. Leo will recruit participants by Monday."
-  }
-  ```
-
-A successful request returns HTTP 200 with the model name and generated response under `data`. Invalid or oversized prompts return HTTP 400. If Ollama is unavailable or fails, the API returns a generic error without exposing provider details or environment values.
-
-## Development status
-
-**Current stage:** frontend dashboard, meeting CRUD/audio upload, workspace CRUD and organization, local Ollama prompt testing, and transcript-based meeting analysis are implemented. Audio transcription is not started by the meeting analysis endpoint. Workspace chat and isolated long-term memory remain pending.
-
-## Planned improvements
-
-- Add automated API tests for meeting validation, workspace CRUD, assignment, and deletion preservation.
-- Implement workspace-scoped long-term memory and RAG after choosing an AI provider.
-- Connect and validate physical meeting-device recording controls.
-- Replace sample analytics and settings behavior with persisted workspace data.
+**ConvoIQ — Making Every Meeting More Productive.**
